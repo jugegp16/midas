@@ -238,7 +238,7 @@ def live(
         risk_config=risk_config,
     )
 
-    engine = LiveEngine(
+    with LiveEngine(
         portfolio=port,
         allocator=allocator,
         order_sizer=order_sizer,
@@ -248,8 +248,8 @@ def live(
         constraints=constraints,
         poll_interval=interval,
         dry_run=dry_run,
-    )
-    engine.run()
+    ) as engine:
+        engine.run()
 
 
 @cli.command()

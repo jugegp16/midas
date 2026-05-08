@@ -150,7 +150,7 @@ def test_load_or_seed_warns_on_share_drift(tmp_path: Path, caplog: pytest.LogCap
     with caplog.at_level("WARNING"):
         state = load_or_seed(portfolio_drifted, path)
     assert state.lots["AAPL"][0].shares == 100.0  # state file wins
-    assert any("AAPL" in record.message and "200" in record.message for record in caplog.records)
+    assert any(record.levelname == "WARNING" and "share drift" in record.message for record in caplog.records)
 
 
 def test_load_or_seed_warns_on_cash_drift(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
@@ -168,7 +168,7 @@ def test_load_or_seed_warns_on_cash_drift(tmp_path: Path, caplog: pytest.LogCapt
     with caplog.at_level("WARNING"):
         state = load_or_seed(portfolio_drifted, path)
     assert state.available_cash == 1000.0  # state file wins
-    assert any("available_cash" in record.message for record in caplog.records)
+    assert any(record.levelname == "WARNING" and "available_cash drift" in record.message for record in caplog.records)
 
 
 def test_load_or_seed_warns_on_cost_basis_drift(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
@@ -191,7 +191,7 @@ def test_load_or_seed_warns_on_cost_basis_drift(tmp_path: Path, caplog: pytest.L
     with caplog.at_level("WARNING"):
         state = load_or_seed(portfolio_drifted, path)
     assert state.lots["AAPL"][0].cost_basis == 150.0  # state file wins
-    assert any("cost_basis" in record.message for record in caplog.records)
+    assert any(record.levelname == "WARNING" and "cost_basis drift" in record.message for record in caplog.records)
 
 
 def test_load_or_seed_does_not_warn_on_cost_basis_within_tolerance(

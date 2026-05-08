@@ -317,6 +317,67 @@ def test_tick_passes_current_drawdown_to_allocator(tmp_path: Path) -> None:
     assert captured_kwargs["current_drawdown"] == pytest.approx(0.6)
 
 
+def test_peak_equity_survives_engine_restart_and_drives_drawdown(tmp_path: Path) -> None:
+    """Tick A advances peak via the engine's own logic, then a fresh engine
+    constructed from the same state path reads peak from disk and the next
+    tick's current_drawdown reflects the persisted value.
+
+    Without persistence, the second engine would re-seed peak from the YAML's
+    seed_equity and compute drawdown=0.0 on the same total_value that was a
+    real drawdown vs the persisted peak. Same dead-code-shape as the original
+    C1 finding (peak_equity wired but never restored across processes).
+    """
+    portfolio = PortfolioConfig(
+        holdings=[Holding(ticker="AAPL", shares=10.0, cost_basis=100.0)],
+        available_cash=0.0,
+    )
+    state_path = tmp_path / "state.yaml"
+
+    # Tick A: price at 200 → equity at $2000, peak ratchets to $2000.
+    provider_a = _make_provider({"AAPL": [200.0]}, [date(2026, 5, 7)])
+    engine_a = LiveEngine(
+        portfolio=portfolio,
+        allocator=Allocator(entries=[], constraints=AllocationConstraints(), n_tickers=1),
+        order_sizer=OrderSizer(),
+        provider=provider_a,
+        state_path=state_path,
+    )
+    engine_a._tick(["AAPL"])
+    persisted_peak = engine_a._state.peak_equity
+    engine_a.close()
+
+    # On disk the peak should now be $2000 (state was written by tick A).
+    on_disk = load_state(state_path)
+    assert on_disk.peak_equity == pytest.approx(2000.0)
+    assert persisted_peak == pytest.approx(2000.0)
+
+    # Tick B: fresh engine, lower price → current_drawdown reflects the persisted peak.
+    captured: dict[str, float] = {}
+    allocator_b = Allocator(entries=[], constraints=AllocationConstraints(), n_tickers=1)
+    original_allocate = allocator_b.allocate
+
+    def capturing_allocate(*args: object, current_drawdown: float = 0.0, **kwargs: object) -> object:
+        captured["current_drawdown"] = current_drawdown
+        return original_allocate(*args, current_drawdown=current_drawdown, **kwargs)  # type: ignore[arg-type]
+
+    allocator_b.allocate = capturing_allocate  # type: ignore[method-assign]
+
+    provider_b = _make_provider({"AAPL": [80.0]}, [date(2026, 5, 8)])
+    engine_b = LiveEngine(
+        portfolio=portfolio,
+        allocator=allocator_b,
+        order_sizer=OrderSizer(),
+        provider=provider_b,
+        state_path=state_path,
+    )
+    engine_b._tick(["AAPL"])
+    engine_b.close()
+
+    # total_value on tick B = 0 cash + 10 * 80 = $800. peak (persisted) = $2000.
+    # current_drawdown = (2000 - 800) / 2000 = 0.6
+    assert captured["current_drawdown"] == pytest.approx(0.6)
+
+
 def test_tick_does_not_advance_hwm_for_unheld_tickers(tmp_path: Path) -> None:
     """HWM must only ratchet for tickers we actually hold. Otherwise a ticker
     that ran up before the strategy first bought it would seed ``TrailingStop``

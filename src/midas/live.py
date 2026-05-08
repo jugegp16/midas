@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import errno
-import fcntl
 import logging
 import os
 import time
@@ -11,6 +10,11 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
+
+try:
+    import fcntl
+except ImportError:  # Windows
+    fcntl = None  # type: ignore[assignment]
 
 from midas.allocator import AllocationResult, Allocator
 from midas.data.price_history import PriceHistory
@@ -43,6 +47,12 @@ class LiveEngine:
         dry_run: bool = False,
         history_days: int | None = None,
     ) -> None:
+        if fcntl is None:
+            msg = (
+                "LiveEngine requires fcntl-based file locking, which is unavailable "
+                "on this platform (Windows). The live engine is currently POSIX-only."
+            )
+            raise RuntimeError(msg)
         self._state_path = state_path
         # Take an exclusive non-blocking advisory lock on a sidecar lockfile
         # before touching the state. Two ``midas live`` processes against the

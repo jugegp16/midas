@@ -22,6 +22,12 @@ def test_live_command_uses_sidecar_state_path_by_default(tmp_path: Path) -> None
         def __init__(self, *args: object, state_path: Path, **kwargs: object) -> None:
             captured["state_path"] = state_path
 
+        def __enter__(self) -> _StubEngine:
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            return None
+
         def run(self) -> None:
             return
 
@@ -49,6 +55,12 @@ def test_live_command_honors_state_file_field(tmp_path: Path) -> None:
     class _StubEngine:
         def __init__(self, *args: object, state_path: Path, **kwargs: object) -> None:
             captured["state_path"] = state_path
+
+        def __enter__(self) -> _StubEngine:
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            return None
 
         def run(self) -> None:
             return
