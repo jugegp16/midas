@@ -66,30 +66,41 @@ class LiveEngine:
                 )
                 raise RuntimeError(msg) from exc
             raise
-        self._state: LiveState = load_or_seed(portfolio, state_path)
-        self._portfolio = portfolio
-        self._allocator = allocator
-        self._order_sizer = order_sizer
-        self._exit_rules = exit_rules or []
-        self._constraints = constraints or AllocationConstraints()
-        self._provider = provider
-        self._poll_interval = poll_interval
-        self._dry_run = dry_run
-        # Derive the history window from the largest warmup required across
-        # configured strategies (plus slack for weekends/holidays). An explicit
-        # ``history_days`` override is still honored for tests.
-        if history_days is not None:
-            self._history_days = history_days
-        else:
-            warmup_bars = max_warmup([*allocator.strategies, *self._exit_rules])
-            self._history_days = warmup_bars_to_calendar_days(warmup_bars)
-        # Track (ticker, direction, shares) from last tick to suppress duplicate alerts
-        self._last_order_keys: set[tuple[str, Direction, float]] = set()
-        self._restriction_tracker: RestrictionTracker | None = None
-        if portfolio.trading_restrictions:
-            self._restriction_tracker = RestrictionTracker(
-                portfolio.trading_restrictions,
-            )
+
+        # Once the lock is held, any failure during the rest of __init__ must
+        # release it; otherwise a supervisor (or REPL) that catches the
+        # exception and retries would see a misleading "another midas live
+        # process" RuntimeError on the second attempt within the same process.
+        # ``BaseException`` is intentional — keyboard interrupts during
+        # ``load_or_seed`` should also release the lock.
+        try:
+            self._state: LiveState = load_or_seed(portfolio, state_path)
+            self._portfolio = portfolio
+            self._allocator = allocator
+            self._order_sizer = order_sizer
+            self._exit_rules = exit_rules or []
+            self._constraints = constraints or AllocationConstraints()
+            self._provider = provider
+            self._poll_interval = poll_interval
+            self._dry_run = dry_run
+            # Derive the history window from the largest warmup required across
+            # configured strategies (plus slack for weekends/holidays). An explicit
+            # ``history_days`` override is still honored for tests.
+            if history_days is not None:
+                self._history_days = history_days
+            else:
+                warmup_bars = max_warmup([*allocator.strategies, *self._exit_rules])
+                self._history_days = warmup_bars_to_calendar_days(warmup_bars)
+            # Track (ticker, direction, shares) from last tick to suppress duplicate alerts
+            self._last_order_keys: set[tuple[str, Direction, float]] = set()
+            self._restriction_tracker: RestrictionTracker | None = None
+            if portfolio.trading_restrictions:
+                self._restriction_tracker = RestrictionTracker(
+                    portfolio.trading_restrictions,
+                )
+        except BaseException:
+            self.close()
+            raise
 
     def close(self) -> None:
         """Release the state lockfile.

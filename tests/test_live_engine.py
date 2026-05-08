@@ -11,7 +11,7 @@ import pytest
 
 from midas.allocator import Allocator
 from midas.live import LiveEngine
-from midas.live_state import LiveState, aggregate_cost_basis, load_state, save_atomic
+from midas.live_state import LiveState, StateFileError, aggregate_cost_basis, load_state, save_atomic
 from midas.models import (
     AllocationConstraints,
     CashInfusion,
@@ -392,3 +392,71 @@ def test_lockfile_prevents_concurrent_engines(tmp_path: Path) -> None:
         state_path=state_path,
     )
     second.close()
+
+
+def test_lock_released_when_init_fails_after_acquisition(tmp_path: Path) -> None:
+    """If load_or_seed raises after the lock is acquired (e.g., corrupt state file),
+    the lock fd must be released. Otherwise a retry in the same process hits a
+    bogus 'another midas live process' RuntimeError.
+    """
+    # Pre-write a corrupt state file so load_or_seed raises StateFileError.
+    state_path = tmp_path / "state.yaml"
+    state_path.write_text("schema_version: 99\navailable_cash: 0\n")  # unsupported
+
+    portfolio = PortfolioConfig(
+        holdings=[Holding(ticker="AAPL", shares=10.0, cost_basis=100.0)],
+        available_cash=0.0,
+    )
+    provider = _make_provider({"AAPL": [100.0]}, [date(2026, 5, 7)])
+
+    # First attempt: load_or_seed raises on the unsupported schema_version.
+    with pytest.raises(StateFileError):
+        LiveEngine(
+            portfolio=portfolio,
+            allocator=Allocator(entries=[], constraints=AllocationConstraints(), n_tickers=1),
+            order_sizer=OrderSizer(),
+            provider=provider,
+            state_path=state_path,
+        )
+
+    # Fix the state file and retry — should succeed without "another midas live"
+    # RuntimeError because the lock was released on the first failure.
+    state_path.write_text("schema_version: 1\navailable_cash: 0.0\n")
+    second = LiveEngine(
+        portfolio=portfolio,
+        allocator=Allocator(entries=[], constraints=AllocationConstraints(), n_tickers=1),
+        order_sizer=OrderSizer(),
+        provider=provider,
+        state_path=state_path,
+    )
+    second.close()
+
+
+def test_drawdown_overlay_produces_smaller_exposure_under_real_drawdown() -> None:
+    """End-to-end check that current_drawdown actually affects exposure scaling.
+
+    The Task 9 fix wires current_drawdown from state.peak_equity through to
+    Allocator.allocate. Paired with ``test_tick_passes_current_drawdown_to_allocator``
+    (which pins the kwarg arriving), this test pins the downstream formula —
+    ``apply_drawdown_overlay`` reduces exposure when drawdown is non-zero, with
+    the expected formula and clamping. Together they establish the chain works
+    end-to-end: kwarg arrives + overlay produces expected scale = behavior is
+    correct (and not silently dead code).
+    """
+    from midas.risk import apply_drawdown_overlay
+
+    # No drawdown: exposure scale stays at 1.0.
+    no_dd = apply_drawdown_overlay(current_drawdown=0.0, penalty=2.0, floor=0.5)
+    assert no_dd == 1.0
+
+    # 20% drawdown with penalty=2.0: exposure = max(1 - 2*0.2, 0.5) = 0.6.
+    moderate = apply_drawdown_overlay(current_drawdown=0.2, penalty=2.0, floor=0.5)
+    assert moderate == pytest.approx(0.6)
+
+    # 60% drawdown (matches the live-engine kwarg-arrival test): raw =
+    # 1 - 1.2 = -0.2, clamped to floor 0.5.
+    deep = apply_drawdown_overlay(current_drawdown=0.6, penalty=2.0, floor=0.5)
+    assert deep == pytest.approx(0.5)
+
+    # Confirm the chain: deeper drawdown produces smaller-or-equal exposure.
+    assert deep <= moderate <= no_dd
