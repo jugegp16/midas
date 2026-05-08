@@ -493,6 +493,54 @@ def test_lock_released_when_init_fails_after_acquisition(tmp_path: Path) -> None
     second.close()
 
 
+def test_engine_creates_trade_log_alongside_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Smoke: a tick that produces a fill writes ``<state>.trades.csv`` with a BUY row."""
+    from midas.trade_log import read_trades
+
+    portfolio = PortfolioConfig(
+        holdings=[],
+        available_cash=1000.0,
+    )
+    state_path = tmp_path / "portfolio.state.yaml"
+    expected_log = state_path.with_suffix(state_path.suffix + ".trades.csv")
+    provider = _make_provider({"AAPL": [100.0]}, [date(2026, 5, 7)])
+
+    engine = LiveEngine(
+        portfolio=portfolio,
+        allocator=Allocator(entries=[], constraints=AllocationConstraints(), n_tickers=1),
+        order_sizer=OrderSizer(),
+        provider=provider,
+        state_path=state_path,
+    )
+
+    fake_buy = Order(
+        ticker="AAPL",
+        direction=Direction.BUY,
+        shares=1.0,
+        price=100.0,
+        estimated_value=100.0,
+        context=OrderContext(
+            contributions={"fake": 1.0},
+            blended_score=1.0,
+            target_weight=1.0,
+            current_weight=0.0,
+            reason="test",
+            source="fake",
+        ),
+    )
+    monkeypatch.setattr(engine._order_sizer, "size_buys", lambda *a, **kw: [fake_buy])
+
+    try:
+        engine._tick(["AAPL"])
+    finally:
+        engine.close()
+
+    assert expected_log.exists(), "trade log should be created next to the state file"
+    trades = read_trades(expected_log)
+    buys = [t for t in trades if t.direction == Direction.BUY]
+    assert buys, "first tick should record at least one BUY row"
+
+
 def test_drawdown_overlay_produces_smaller_exposure_under_real_drawdown() -> None:
     """End-to-end check that current_drawdown actually affects exposure scaling.
 
