@@ -131,6 +131,11 @@ def load_or_seed(portfolio: PortfolioConfig, state_path: Path) -> LiveState:
     when the operator originally bought; affects ST/LT classification — they
     can hand-edit later if precision matters).
 
+    On subsequent loads, warns if the YAML aggregates disagree with state
+    (the state file wins). Refuses to start if the portfolio no longer lists
+    a ticker for which lots are still held — that's almost certainly a config
+    mistake.
+
     Args:
         portfolio: Portfolio configuration to seed from when no state exists.
         state_path: Filesystem path of the persisted state YAML.
@@ -139,7 +144,9 @@ def load_or_seed(portfolio: PortfolioConfig, state_path: Path) -> LiveState:
         The loaded or freshly-seeded ``LiveState``.
     """
     if state_path.exists():
-        return load_state(state_path)
+        state = load_state(state_path)
+        _check_for_drift(state, portfolio)
+        return state
 
     lots: dict[str, list[PositionLot]] = {}
     for holding in portfolio.holdings:
@@ -163,3 +170,34 @@ def load_or_seed(portfolio: PortfolioConfig, state_path: Path) -> LiveState:
     save_atomic(state, state_path)
     logger.info("Seeded state at %s from portfolio config", state_path)
     return state
+
+
+def _check_for_drift(state: LiveState, portfolio: PortfolioConfig) -> None:
+    """Warn on aggregate drift; raise if a held ticker has no Holding."""
+    yaml_tickers = {holding.ticker for holding in portfolio.holdings}
+    for ticker, lots in state.lots.items():
+        held = sum(lot.shares for lot in lots)
+        if held <= 0:
+            continue
+        if ticker not in yaml_tickers:
+            msg = (
+                f"ticker {ticker} is held in state ({held} shares) but not "
+                f"listed in portfolio.yaml; refusing to start. Either restore "
+                f"the holding entry or close out the position in state."
+            )
+            raise StateFileError(msg)
+        holding = portfolio.get_holding(ticker)
+        assert holding is not None  # guarded by yaml_tickers membership
+        if holding.shares != held:
+            logger.warning(
+                "share drift: portfolio.yaml has %s=%s but state has %s; trusting state",
+                ticker,
+                holding.shares,
+                held,
+            )
+    if portfolio.available_cash != state.available_cash:
+        logger.warning(
+            "available_cash drift: portfolio.yaml has %s but state has %s; trusting state",
+            portfolio.available_cash,
+            state.available_cash,
+        )

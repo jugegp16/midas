@@ -105,3 +105,55 @@ def test_load_or_seed_skips_holdings_with_zero_shares(tmp_path: Path) -> None:
     state = load_or_seed(portfolio, path)
     assert "AAPL" in state.lots
     assert "MSFT" not in state.lots
+
+
+def test_load_or_seed_warns_on_share_drift(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    portfolio = PortfolioConfig(
+        holdings=[Holding(ticker="AAPL", shares=100.0, cost_basis=150.0)],
+        available_cash=1000.0,
+    )
+    path = tmp_path / "state.yaml"
+    load_or_seed(portfolio, path)  # first call seeds
+
+    portfolio_drifted = PortfolioConfig(
+        holdings=[Holding(ticker="AAPL", shares=200.0, cost_basis=150.0)],  # state still has 100
+        available_cash=1000.0,
+    )
+    with caplog.at_level("WARNING"):
+        state = load_or_seed(portfolio_drifted, path)
+    assert state.lots["AAPL"][0].shares == 100.0  # state file wins
+    assert any("AAPL" in record.message and "200" in record.message for record in caplog.records)
+
+
+def test_load_or_seed_warns_on_cash_drift(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    portfolio = PortfolioConfig(
+        holdings=[Holding(ticker="AAPL", shares=100.0, cost_basis=150.0)],
+        available_cash=1000.0,
+    )
+    path = tmp_path / "state.yaml"
+    load_or_seed(portfolio, path)
+
+    portfolio_drifted = PortfolioConfig(
+        holdings=[Holding(ticker="AAPL", shares=100.0, cost_basis=150.0)],
+        available_cash=9999.99,
+    )
+    with caplog.at_level("WARNING"):
+        state = load_or_seed(portfolio_drifted, path)
+    assert state.available_cash == 1000.0  # state file wins
+    assert any("available_cash" in record.message for record in caplog.records)
+
+
+def test_load_or_seed_raises_when_held_ticker_removed_from_portfolio(tmp_path: Path) -> None:
+    portfolio = PortfolioConfig(
+        holdings=[Holding(ticker="AAPL", shares=100.0, cost_basis=150.0)],
+        available_cash=1000.0,
+    )
+    path = tmp_path / "state.yaml"
+    load_or_seed(portfolio, path)
+
+    portfolio_without = PortfolioConfig(
+        holdings=[],  # AAPL removed from portfolio while still held in state
+        available_cash=1000.0,
+    )
+    with pytest.raises(StateFileError, match=r"AAPL.*100"):
+        load_or_seed(portfolio_without, path)
