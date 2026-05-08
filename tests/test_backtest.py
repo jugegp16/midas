@@ -1613,3 +1613,17 @@ def test_execute_sell_mixed_lot_records_various() -> None:
     # Only one ST bucket since both lots are <365 days from sell day → both ST → mixed.
     trade, _basis = records[0]
     assert trade.purchase_date == "various"
+
+
+def test_execute_sell_single_unseeded_lot_records_none() -> None:
+    """SELL bucket consuming one lot with purchase_date=None records None,
+    not 'various'. Mirrors live-mode unseeded lots from a fresh state file."""
+    engine = _build_engine()
+    state = _SimState(cash=0.0, starting_value=0.0)
+    state.lots["AAPL"] = [PositionLot(shares=10.0, purchase_date=None, cost_basis=10.0)]
+    state.positions["AAPL"] = 10.0
+
+    order = _sell_order("AAPL", 10.0, 15.0, source="StopLoss")
+    records = engine._execute(order, date(2026, 5, 8), state)
+    trade, _basis = records[0]
+    assert trade.purchase_date is None

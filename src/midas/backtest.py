@@ -886,16 +886,22 @@ class BacktestEngine:
     def _resolve_purchase_date(dates: tuple[date | None, ...]) -> date | str | None:
         """Map a tuple of consumed lots' purchase dates to a single CSV value.
 
-        Empty tuple → None. Single unique non-None date → that date. Anything
-        else (multiple dates, any None present) → the literal string 'various'.
+        - Empty tuple → ``None``.
+        - All consumed lots share one ``purchase_date`` (a date OR all-``None``)
+          → that single value (the date, or ``None`` if every consumed lot was
+          unseeded).
+        - Multiple distinct values, including the ``date + None`` mix → the
+          literal string ``'various'`` (Schedule D convention for mixed-lot
+          sales).
 
         Args:
             dates: Purchase dates of the lots consumed by a single SELL bucket,
                 in FIFO order. May contain ``None`` for unseeded lots.
 
         Returns:
-            The single shared date, the literal string ``'various'``, or
-            ``None`` when there are no consumed lots.
+            The single shared date, ``None`` (empty tuple or all unseeded
+            lots), or the literal string ``'various'`` when consumed lots
+            disagree.
         """
         if not dates:
             return None
