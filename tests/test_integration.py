@@ -54,7 +54,7 @@ def test_full_pipeline(tmp_path: Path) -> None:
     assert len(portfolio.holdings) == 2
     assert portfolio.available_cash == 3000.0
 
-    strat_configs, constraints, _risk_config = load_strategies(strategy_path)
+    strat_configs, constraints, _risk_config, _tax_config = load_strategies(strategy_path)
     assert len(strat_configs) == 3
 
     # 4. Build allocator + order_sizer + exit rules

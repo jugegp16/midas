@@ -178,3 +178,39 @@ class RiskConfig:
             missing = "drawdown_floor" if self.drawdown_penalty is not None else "drawdown_penalty"
             msg = f"drawdown_penalty and drawdown_floor must both be set or both omitted; missing {missing}"
             raise ValueError(msg)
+
+
+@dataclass(frozen=True)
+class TaxConfig:
+    """Optional capital-gains-tax accounting policy.
+
+    All rates are decimal fractions (0.37 == 37%). When None is passed in
+    place of a TaxConfig, after-tax accounting is fully disabled — no extra
+    BacktestResult fields, no equity_curve.csv column, no chart overlay.
+
+    deductible_loss_cap: cap on net losses deducted against ordinary income
+        per year (IRC §1211(b) — $3,000 single-filer / MFJ). Excess carries
+        forward to the next year.
+    payment_lag_days: calendar days from year-end to when tax for that year
+        is deducted from the after-tax equity curve. Defaults to 105 ≈ Apr 15
+        of the following year.
+    """
+
+    short_term_rate: float = 0.37
+    long_term_rate: float = 0.20
+    deductible_loss_cap: float = 3000.0
+    payment_lag_days: int = 105
+
+    def __post_init__(self) -> None:
+        if self.short_term_rate < 0 or self.short_term_rate >= 1:
+            msg = f"short_term_rate must be in [0, 1), got {self.short_term_rate}"
+            raise ValueError(msg)
+        if self.long_term_rate < 0 or self.long_term_rate >= 1:
+            msg = f"long_term_rate must be in [0, 1), got {self.long_term_rate}"
+            raise ValueError(msg)
+        if self.deductible_loss_cap < 0:
+            msg = f"deductible_loss_cap must be >= 0, got {self.deductible_loss_cap}"
+            raise ValueError(msg)
+        if self.payment_lag_days < 0:
+            msg = f"payment_lag_days must be >= 0, got {self.payment_lag_days}"
+            raise ValueError(msg)

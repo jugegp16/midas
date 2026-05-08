@@ -17,6 +17,7 @@ from midas.models import (
     PortfolioConfig,
     RiskConfig,
     StrategyConfig,
+    TaxConfig,
 )
 from midas.order_sizer import OrderSizer
 from midas.output import print_backtest_summary, print_status, print_strategy_table
@@ -159,8 +160,8 @@ def backtest(
 ) -> None:
     """Run a backtest over historical data."""
     port = load_portfolio(Path(portfolio))
-    strat_configs, constraints, risk_config = (
-        load_strategies(Path(strategies)) if strategies else (None, AllocationConstraints(), RiskConfig())
+    strat_configs, constraints, risk_config, _tax_config = (
+        load_strategies(Path(strategies)) if strategies else (None, AllocationConstraints(), RiskConfig(), None)
     )
 
     start_d, end_d = _to_date(start), _to_date(end)
@@ -225,8 +226,8 @@ def live(
     portfolio_path = Path(portfolio)
     port = load_portfolio(portfolio_path)
     state_path = port.state_file if port.state_file is not None else portfolio_path.with_suffix(".state.yaml")
-    strat_configs, constraints, risk_config = (
-        load_strategies(Path(strategies)) if strategies else (None, AllocationConstraints(), RiskConfig())
+    strat_configs, constraints, risk_config, _tax_config = (
+        load_strategies(Path(strategies)) if strategies else (None, AllocationConstraints(), RiskConfig(), None)
     )
     provider = CachedYFinanceProvider()
 
@@ -348,8 +349,9 @@ def optimize(
     strategy_names: list[str] | None = None
     min_cash_pct = AllocationConstraints().min_cash_pct
     risk_config: RiskConfig = RiskConfig()
+    tax_config: TaxConfig | None = None
     if strategies:
-        strat_configs, strat_constraints, risk_config = load_strategies(Path(strategies))
+        strat_configs, strat_constraints, risk_config, tax_config = load_strategies(Path(strategies))
         strategy_names = [cfg.name for cfg in strat_configs]
         min_cash_pct = strat_constraints.min_cash_pct
 
@@ -385,7 +387,13 @@ def optimize(
             risk_config=risk_config,
         )
 
-        write_strategies_yaml(wf_result.best_params, output, min_cash_pct=min_cash_pct, risk_config=risk_config)
+        write_strategies_yaml(
+            wf_result.best_params,
+            output,
+            min_cash_pct=min_cash_pct,
+            risk_config=risk_config,
+            tax_config=tax_config,
+        )
 
         console.print()
 
@@ -470,7 +478,13 @@ def optimize(
             risk_config=risk_config,
         )
 
-        write_strategies_yaml(result.best_params, output, min_cash_pct=min_cash_pct, risk_config=risk_config)
+        write_strategies_yaml(
+            result.best_params,
+            output,
+            min_cash_pct=min_cash_pct,
+            risk_config=risk_config,
+            tax_config=tax_config,
+        )
 
         console.print()
 
