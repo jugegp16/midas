@@ -883,6 +883,29 @@ class BacktestEngine:
             state.cash -= order.estimated_value
 
     @staticmethod
+    def _resolve_purchase_date(dates: tuple[date | None, ...]) -> date | str | None:
+        """Map a tuple of consumed lots' purchase dates to a single CSV value.
+
+        Empty tuple → None. Single unique non-None date → that date. Anything
+        else (multiple dates, any None present) → the literal string 'various'.
+
+        Args:
+            dates: Purchase dates of the lots consumed by a single SELL bucket,
+                in FIFO order. May contain ``None`` for unseeded lots.
+
+        Returns:
+            The single shared date, the literal string ``'various'``, or
+            ``None`` when there are no consumed lots.
+        """
+        if not dates:
+            return None
+        unique = set(dates)
+        if len(unique) == 1:
+            only = next(iter(unique))
+            return only  # may be a date or None
+        return "various"
+
+    @staticmethod
     def _fifo_consumed_basis(lots: list[PositionLot], shares: float) -> float:
         """Share-weighted cost basis of the first *shares* shares in FIFO order.
 
@@ -936,6 +959,7 @@ class BacktestEngine:
                         shares=order.shares,
                         price=order.price,
                         strategy_name=strategy_name,
+                        purchase_date=day,
                     ),
                     0.0,
                 )
@@ -987,6 +1011,7 @@ class BacktestEngine:
                         price=order.price,
                         strategy_name=strategy_name,
                         holding_period=HoldingPeriod.SHORT_TERM,
+                        purchase_date=self._resolve_purchase_date(breakdown.st_purchase_dates),
                     ),
                     st_weighted_basis / st_shares,
                 )
@@ -1002,6 +1027,7 @@ class BacktestEngine:
                         price=order.price,
                         strategy_name=strategy_name,
                         holding_period=HoldingPeriod.LONG_TERM,
+                        purchase_date=self._resolve_purchase_date(breakdown.lt_purchase_dates),
                     ),
                     lt_weighted_basis / lt_shares,
                 )

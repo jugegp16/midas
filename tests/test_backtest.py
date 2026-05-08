@@ -1551,3 +1551,65 @@ def test_sell_mixed_basis_within_single_period() -> None:
     assert trade.holding_period == HoldingPeriod.SHORT_TERM
     assert trade.shares == 10.0
     assert basis == 92.0
+
+
+# --- TradeRecord.purchase_date population in _execute ---
+
+
+def _buy_order(ticker: str, shares: float, price: float, source: str = "Momentum") -> Order:
+    return Order(
+        ticker=ticker,
+        direction=Direction.BUY,
+        shares=shares,
+        price=price,
+        estimated_value=shares * price,
+        context=OrderContext(
+            contributions={source: 1.0},
+            blended_score=1.0,
+            target_weight=0.5,
+            current_weight=0.0,
+            reason="entry",
+            source=source,
+        ),
+    )
+
+
+def test_execute_buy_records_purchase_date_as_day() -> None:
+    """BUY records carry the fill date as their purchase_date."""
+    engine = _build_engine()
+    state = _SimState(cash=10000.0, starting_value=10000.0)
+
+    order = _buy_order("AAPL", 10.0, 20.0)
+    records = engine._execute(order, date(2026, 5, 8), state)
+    trade, _basis = records[0]
+    assert trade.purchase_date == date(2026, 5, 8)
+
+
+def test_execute_sell_single_lot_records_lot_purchase_date() -> None:
+    """SELL bucket consuming one lot records that lot's purchase date."""
+    engine = _build_engine()
+    state = _SimState(cash=0.0, starting_value=0.0)
+    state.lots["AAPL"] = [PositionLot(shares=10.0, purchase_date=date(2026, 1, 1), cost_basis=10.0)]
+    state.positions["AAPL"] = 10.0
+
+    order = _sell_order("AAPL", 10.0, 15.0, source="StopLoss")
+    records = engine._execute(order, date(2026, 5, 8), state)
+    trade, _basis = records[0]
+    assert trade.purchase_date == date(2026, 1, 1)
+
+
+def test_execute_sell_mixed_lot_records_various() -> None:
+    """SELL bucket spanning multiple lots with different dates records 'various'."""
+    engine = _build_engine()
+    state = _SimState(cash=0.0, starting_value=0.0)
+    state.lots["AAPL"] = [
+        PositionLot(shares=5.0, purchase_date=date(2026, 1, 1), cost_basis=10.0),
+        PositionLot(shares=5.0, purchase_date=date(2026, 2, 1), cost_basis=11.0),
+    ]
+    state.positions["AAPL"] = 10.0
+
+    order = _sell_order("AAPL", 10.0, 15.0, source="StopLoss")
+    records = engine._execute(order, date(2026, 5, 8), state)
+    # Only one ST bucket since both lots are <365 days from sell day → both ST → mixed.
+    trade, _basis = records[0]
+    assert trade.purchase_date == "various"

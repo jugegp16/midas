@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from enum import Enum
@@ -118,6 +119,23 @@ class PositionLot:
 
 @dataclass(frozen=True)
 class TradeRecord:
+    """A single executed trade.
+
+    Attributes:
+        date: Fill date.
+        ticker: Symbol.
+        direction: BUY or SELL.
+        shares: Filled share count.
+        price: Fill price per share.
+        strategy_name: Attribution source for this fill.
+        holding_period: SHORT_TERM or LONG_TERM on a SELL bucket; ``None`` on a BUY.
+        purchase_date: Purchase date of the consumed lots (SELL) or the fill date
+            (BUY). On a SELL bucket row, ``'various'`` is the literal string
+            sentinel for mixed-lot buckets where the consumed lots don't share a
+            single purchase date — matches Schedule D convention. ``None``
+            indicates an unseeded live lot (purchase date never known).
+    """
+
     date: date
     ticker: str
     direction: Direction
@@ -125,6 +143,7 @@ class TradeRecord:
     price: float
     strategy_name: str
     holding_period: HoldingPeriod | None = None
+    purchase_date: datetime.date | str | None = None
 
 
 @dataclass
