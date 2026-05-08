@@ -57,7 +57,14 @@ class LoggedTrade:
     return_pct: float | None
 
 
-def _format_purchase_date(value: PurchaseDate) -> str:
+def format_purchase_date(value: date | str | None) -> str:
+    """Render a purchase-date value for the trade-log ``purchase_date`` cell.
+
+    None becomes the empty string, sentinel strings (``"various"``) pass
+    through, and ``date`` values are formatted ISO-8601. Accepts the
+    broader ``date | str | None`` shape used by ``TradeRecord`` as well as
+    the narrower ``PurchaseDate`` alias used by the live-engine writer.
+    """
     if value is None:
         return ""
     if isinstance(value, str):
@@ -65,7 +72,11 @@ def _format_purchase_date(value: PurchaseDate) -> str:
     return value.isoformat()
 
 
-def _format_holding_period(value: HoldingPeriod | None) -> str:
+def format_holding_period(value: HoldingPeriod | None) -> str:
+    """Render a ``HoldingPeriod`` for the trade-log ``holding_period`` cell.
+
+    None becomes the empty string; otherwise the enum value is returned.
+    """
     return value.value if value is not None else ""
 
 
@@ -107,8 +118,8 @@ def append_trade(
                 record.shares,
                 record.price,
                 record.strategy_name,
-                _format_holding_period(record.holding_period),
-                _format_purchase_date(purchase_date),
+                format_holding_period(record.holding_period),
+                format_purchase_date(purchase_date),
                 cost_basis_cell,
                 pnl_cell,
                 ret_cell,

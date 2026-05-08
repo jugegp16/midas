@@ -1702,3 +1702,45 @@ def test_trades_csv_includes_purchase_date_column(tmp_path: Path) -> None:
     assert "purchase_date" in rows[0]
     assert rows[0]["purchase_date"] == "2026-01-05"
     assert rows[1]["purchase_date"] == "2026-01-05"
+
+
+def test_backtest_trades_csv_round_trips_through_trade_log_reader(tmp_path: Path) -> None:
+    """Backtest's trades.csv shape must match TRADE_LOG_COLUMNS exactly so
+    the live and backtest paths share one reader. read_trades raises
+    TradeLogError on any header drift, so a successful round-trip pins
+    the column shape."""
+    from midas.results import _write_trades_csv
+    from midas.trade_log import read_trades
+
+    trades = [
+        TradeRecord(
+            date=date(2026, 1, 5),
+            ticker="AAPL",
+            direction=Direction.BUY,
+            shares=10.0,
+            price=20.0,
+            strategy_name="Momentum",
+            purchase_date=date(2026, 1, 5),
+        ),
+        TradeRecord(
+            date=date(2026, 4, 1),
+            ticker="AAPL",
+            direction=Direction.SELL,
+            shares=10.0,
+            price=25.0,
+            strategy_name="StopLoss",
+            holding_period=HoldingPeriod.SHORT_TERM,
+            purchase_date=date(2026, 1, 5),
+        ),
+    ]
+    result = _make_minimal_result(trades=trades, basis_per_sell=[20.0])
+    out = tmp_path / "trades.csv"
+    _write_trades_csv(result, out)
+    rows = read_trades(out)  # raises on shape drift
+    assert len(rows) == 2
+    assert rows[0].direction == Direction.BUY
+    assert rows[0].purchase_date == date(2026, 1, 5)
+    assert rows[1].direction == Direction.SELL
+    assert rows[1].holding_period == HoldingPeriod.SHORT_TERM
+    assert rows[1].purchase_date == date(2026, 1, 5)
+    assert rows[1].cost_basis == 20.0

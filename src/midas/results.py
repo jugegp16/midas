@@ -22,6 +22,7 @@ from midas.metrics import (
 )
 from midas.models import Direction, TradeRecord
 from midas.risk_metrics import RiskHistory, RiskMetrics
+from midas.trade_log import format_holding_period, format_purchase_date
 
 
 @dataclass
@@ -101,13 +102,6 @@ def _write_trades_csv(result: BacktestResult, path: Path) -> None:
             ]
         )
         for trade in result.trades:
-            purchase_cell: str
-            if trade.purchase_date is None:
-                purchase_cell = ""
-            elif isinstance(trade.purchase_date, str):
-                purchase_cell = trade.purchase_date
-            else:
-                purchase_cell = trade.purchase_date.isoformat()
             common = [
                 trade.date.isoformat(),
                 trade.ticker,
@@ -115,8 +109,8 @@ def _write_trades_csv(result: BacktestResult, path: Path) -> None:
                 trade.shares,
                 trade.price,
                 trade.strategy_name,
-                trade.holding_period.value if trade.holding_period else "",
-                purchase_cell,
+                format_holding_period(trade.holding_period),
+                format_purchase_date(trade.purchase_date),
             ]
             if trade.direction == Direction.SELL:
                 basis = sell_basis.get(id(trade), trade.price)
