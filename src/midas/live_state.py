@@ -376,13 +376,13 @@ def apply_buy(state: LiveState, ticker: str, shares: float, price: float, day: d
     state.available_cash -= shares * price
 
 
-def apply_sell(state: LiveState, ticker: str, shares: float, price: float, day: date) -> tuple[float, float]:
+def apply_sell(state: LiveState, ticker: str, shares: float, price: float, day: date) -> SellBreakdown:
     """Consume *shares* of *ticker* FIFO and increment cash by ``shares * price``.
 
-    Mutates *state* in place. Returns ``(st_realized_pnl, lt_realized_pnl)``
-    matching backtest's ST/LT classification (lots with purchase_date >=365
-    days before *day* count as long-term; everything else, including
-    ``purchase_date=None``, counts as short-term).
+    Mutates *state* in place. Returns the full ``SellBreakdown`` so callers
+    can write trade-log rows with per-bucket shares, basis, and consumed-lot
+    purchase dates. Realized P&L is recoverable as
+    ``breakdown.st_shares * price - breakdown.st_weighted`` (analogous for LT).
     """
     lots = state.lots.get(ticker, [])
     breakdown = consume_lots_fifo(lots, shares, day)
@@ -399,6 +399,4 @@ def apply_sell(state: LiveState, ticker: str, shares: float, price: float, day: 
         # Mirrors backtest's ``state.high_water_marks.pop(ticker, None)`` on
         # ``new_position == 0``.
         state.high_water_marks.pop(ticker, None)
-    st_pnl = breakdown.st_shares * price - breakdown.st_weighted
-    lt_pnl = breakdown.lt_shares * price - breakdown.lt_weighted
-    return st_pnl, lt_pnl
+    return breakdown

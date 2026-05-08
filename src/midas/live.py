@@ -320,7 +320,9 @@ class LiveEngine:
             if order.direction == Direction.BUY:
                 apply_buy(self._state, order.ticker, order.shares, order.price, today)
             else:
-                apply_sell(self._state, order.ticker, order.shares, order.price, today)
+                # apply_sell return now carries per-bucket detail used by the
+                # trade-log append in Task 6 — hold for that wiring.
+                _breakdown = apply_sell(self._state, order.ticker, order.shares, order.price, today)
             if self._restriction_tracker is not None:
                 self._restriction_tracker.record_trade(order.ticker, order.direction, today)
 

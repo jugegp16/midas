@@ -347,11 +347,16 @@ def test_apply_sell_consumes_fifo_and_increments_cash() -> None:
             ]
         },
     )
-    st_pnl, lt_pnl = apply_sell(state, "AAPL", shares=40.0, price=25.0, day=date(2026, 5, 7))
+    breakdown = apply_sell(state, "AAPL", shares=40.0, price=25.0, day=date(2026, 5, 7))
     assert state.available_cash == pytest.approx(40.0 * 25.0)
     assert state.lots["AAPL"] == [PositionLot(shares=10.0, purchase_date=date(2026, 4, 1), cost_basis=20.0)]
+
+    lt_pnl = breakdown.lt_shares * 25.0 - breakdown.lt_weighted
+    st_pnl = breakdown.st_shares * 25.0 - breakdown.st_weighted
     assert lt_pnl == pytest.approx(30.0 * (25.0 - 10.0))
     assert st_pnl == pytest.approx(10.0 * (25.0 - 20.0))
+    assert breakdown.lt_purchase_dates == (date(2025, 4, 1),)
+    assert breakdown.st_purchase_dates == (date(2026, 4, 1),)
 
 
 def test_apply_sell_drops_empty_ticker_entry() -> None:
