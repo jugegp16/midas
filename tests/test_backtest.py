@@ -1809,9 +1809,38 @@ def test_backtest_result_after_tax_fields_populated_with_tax_config() -> None:
     assert result.after_tax_total_return is not None
     assert result.after_tax_cagr is not None
     assert result.after_tax_twr is not None
-    assert result.tax_cost_ratio is not None
     assert result.tax_summary, "tax_summary should be non-empty when sells happened"
     assert len(result.after_tax_equity_curve) == len(result.equity_curve)
+
+    # tax_cost_ratio is only meaningful when gross CAGR is positive; otherwise
+    # the field is None (a losing strategy still has tax drag, but expressing
+    # it as a ratio of negative CAGR is not interpretable).
+    if result.cagr > 0:
+        assert result.tax_cost_ratio is not None
+    else:
+        assert result.tax_cost_ratio is None
+
+    # The StopLoss fixture realizes a loss, so tax_owed is negative (a refund
+    # via the deductible-loss credit) and the after-tax curve sits above the
+    # gross curve. In a winning scenario, tax_owed > 0 and the after-tax curve
+    # would sit below. Either way: the sign of (after_tax - gross) must match
+    # the sign of (-tax_owed), and the after-tax curve must reflect that drag
+    # (or refund).
+    total_tax = sum(s.tax_owed for s in result.tax_summary)
+    if total_tax > 0:
+        assert result.after_tax_final_value < result.final_value
+        assert result.after_tax_cagr is not None and result.after_tax_cagr < result.cagr
+    elif total_tax < 0:
+        assert result.after_tax_final_value > result.final_value
+    else:
+        assert result.after_tax_final_value == result.final_value
+
+    # Structural shape of multi-year summaries: years and payment_dates monotonic.
+    if len(result.tax_summary) > 1:
+        years = [s.year for s in result.tax_summary]
+        payment_dates = [s.payment_date for s in result.tax_summary]
+        assert years == sorted(years)
+        assert payment_dates == sorted(payment_dates)
 
 
 def test_backtest_result_after_tax_fields_none_without_tax_config() -> None:

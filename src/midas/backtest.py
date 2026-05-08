@@ -1156,14 +1156,15 @@ class BacktestEngine:
                     after_tax_total_return = (after_tax_final_value - starting_val) / starting_val
                     after_tax_cagr_value = compute_cagr(starting_val, after_tax_final_value, total_days)
                     # Approximation: scale gross TWR by the after-tax/gross final-value
-                    # ratio. Tax payments are pointwise withdrawals from the curve, so
-                    # this is a reasonable single-number approximation. A bar-by-bar
-                    # TWR re-derivation would require sub-period boundaries that the
-                    # current state machine doesn't expose.
+                    # ratio. This is exact only when there are no mid-period cash infusions;
+                    # with infusions the terminal-value ratio mixes capital contributions
+                    # with tax drag, so interpret this figure cautiously on portfolios with
+                    # CashInfusion configured. A bar-by-bar re-derivation would require
+                    # sub-period boundaries that the current state machine doesn't expose.
                     after_tax_twr_value = (
                         ((1.0 + twr) * (after_tax_final_value / final_value)) - 1.0 if final_value > 0 else twr
                     )
-                    tax_cost_ratio = (cagr - after_tax_cagr_value) / cagr if cagr > 0 else 0.0
+                    tax_cost_ratio = (cagr - after_tax_cagr_value) / cagr if cagr > 0 else None
 
         return BacktestResult(
             trades=state.trades,

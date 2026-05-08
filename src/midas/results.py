@@ -146,7 +146,7 @@ def _write_equity_curve_csv(result: BacktestResult, path: Path) -> None:
         for (dt, nav), drawdown in zip(result.equity_curve, drawdowns, strict=True):
             row: list[object] = [dt.isoformat(), round(nav, 2), round(drawdown, 6)]
             if has_after_tax:
-                row.append(round(after_tax_by_date.get(dt, nav), 2))
+                row.append(round(after_tax_by_date[dt], 2))
             writer.writerow(row)
 
 
@@ -199,11 +199,11 @@ def _write_summary_json(result: BacktestResult, path: Path) -> None:
     if result.after_tax_final_value is not None:
         summary["after_tax_final_value"] = result.after_tax_final_value
         if result.after_tax_total_return is not None:
-            summary["after_tax_total_return"] = round(result.after_tax_total_return, 6)
+            summary["after_tax_total_return"] = round(result.after_tax_total_return, 4)
         if result.after_tax_cagr is not None:
-            summary["after_tax_cagr"] = round(result.after_tax_cagr, 6)
+            summary["after_tax_cagr"] = round(result.after_tax_cagr, 4)
         if result.after_tax_twr is not None:
-            summary["after_tax_twr"] = round(result.after_tax_twr, 6)
+            summary["after_tax_twr"] = round(result.after_tax_twr, 4)
         if result.tax_cost_ratio is not None:
             summary["tax_cost_ratio"] = round(result.tax_cost_ratio, 6)
 
