@@ -214,3 +214,9 @@ class TaxConfig:
         if self.payment_lag_days < 0:
             msg = f"payment_lag_days must be >= 0, got {self.payment_lag_days}"
             raise ValueError(msg)
+        if self.long_term_rate > self.short_term_rate:
+            msg = (
+                f"long_term_rate ({self.long_term_rate}) must be <= short_term_rate "
+                f"({self.short_term_rate}); preferential LT rate is always <= the ST rate"
+            )
+            raise ValueError(msg)

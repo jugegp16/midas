@@ -160,7 +160,7 @@ def backtest(
 ) -> None:
     """Run a backtest over historical data."""
     port = load_portfolio(Path(portfolio))
-    strat_configs, constraints, risk_config, _tax_config = (
+    strat_configs, constraints, risk_config, _ = (
         load_strategies(Path(strategies)) if strategies else (None, AllocationConstraints(), RiskConfig(), None)
     )
 
@@ -226,7 +226,7 @@ def live(
     portfolio_path = Path(portfolio)
     port = load_portfolio(portfolio_path)
     state_path = port.state_file if port.state_file is not None else portfolio_path.with_suffix(".state.yaml")
-    strat_configs, constraints, risk_config, _tax_config = (
+    strat_configs, constraints, risk_config, _ = (
         load_strategies(Path(strategies)) if strategies else (None, AllocationConstraints(), RiskConfig(), None)
     )
     provider = CachedYFinanceProvider()

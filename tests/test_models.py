@@ -16,6 +16,7 @@ from midas.models import (
     PositionLot,
     RiskConfig,
     StrategyConfig,
+    TaxConfig,
     TradeRecord,
 )
 
@@ -145,3 +146,52 @@ class TestRiskConfig:
     def test_weighting_validation(self) -> None:
         with pytest.raises(ValueError, match="weighting"):
             RiskConfig(weighting="bogus")
+
+
+class TestTaxConfig:
+    def test_defaults_instantiation(self) -> None:
+        cfg = TaxConfig()
+        assert cfg.short_term_rate == 0.37
+        assert cfg.long_term_rate == 0.20
+        assert cfg.deductible_loss_cap == 3000.0
+        assert cfg.payment_lag_days == 105
+
+    def test_short_term_rate_zero_valid(self) -> None:
+        TaxConfig(short_term_rate=0.0, long_term_rate=0.0)  # ok
+
+    def test_short_term_rate_one_invalid(self) -> None:
+        with pytest.raises(ValueError, match="short_term_rate"):
+            TaxConfig(short_term_rate=1.0)
+
+    def test_short_term_rate_negative_invalid(self) -> None:
+        with pytest.raises(ValueError, match="short_term_rate"):
+            TaxConfig(short_term_rate=-0.01)
+
+    def test_long_term_rate_zero_valid(self) -> None:
+        TaxConfig(long_term_rate=0.0)  # ok
+
+    def test_long_term_rate_one_invalid(self) -> None:
+        with pytest.raises(ValueError, match="long_term_rate"):
+            TaxConfig(long_term_rate=1.0)
+
+    def test_long_term_rate_negative_invalid(self) -> None:
+        with pytest.raises(ValueError, match="long_term_rate"):
+            TaxConfig(long_term_rate=-0.01)
+
+    def test_deductible_loss_cap_zero_valid(self) -> None:
+        TaxConfig(deductible_loss_cap=0.0)  # ok
+
+    def test_deductible_loss_cap_negative_invalid(self) -> None:
+        with pytest.raises(ValueError, match="deductible_loss_cap"):
+            TaxConfig(deductible_loss_cap=-1.0)
+
+    def test_payment_lag_days_zero_valid(self) -> None:
+        TaxConfig(payment_lag_days=0)  # ok
+
+    def test_payment_lag_days_negative_invalid(self) -> None:
+        with pytest.raises(ValueError, match="payment_lag_days"):
+            TaxConfig(payment_lag_days=-1)
+
+    def test_long_term_exceeds_short_term_raises(self) -> None:
+        with pytest.raises(ValueError, match="long_term_rate"):
+            TaxConfig(short_term_rate=0.20, long_term_rate=0.37)
