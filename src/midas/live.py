@@ -12,7 +12,7 @@ import pandas as pd
 from midas.allocator import AllocationResult, Allocator
 from midas.data.price_history import PriceHistory
 from midas.data.provider import DataProvider
-from midas.live_state import LiveState, aggregate_cost_basis, load_or_seed
+from midas.live_state import LiveState, aggregate_cost_basis, apply_buy, apply_sell, load_or_seed, save_atomic
 from midas.models import (
     AllocationConstraints,
     Direction,
@@ -208,6 +208,41 @@ class LiveEngine:
             ]
 
         filtered = exit_orders + buy_orders
+
+        # Apply assumed fills to the in-memory state.
+        for order in filtered:
+            if order.shares <= 0:
+                continue
+            if order.direction == Direction.BUY:
+                apply_buy(self._state, order.ticker, order.shares, order.price, today)
+            else:
+                apply_sell(self._state, order.ticker, order.shares, order.price, today)
+
+        # Update peak equity from the current portfolio value (post-fills).
+        positions_after = {
+            ticker: sum(lot.shares for lot in self._state.lots.get(ticker, [])) for ticker in active_tickers
+        }
+        current_equity = self._state.available_cash + sum(
+            positions_after[ticker] * current_prices[ticker] for ticker in active_tickers
+        )
+        self._state.peak_equity = max(self._state.peak_equity or 0.0, current_equity)
+
+        # Advance cash infusion if due.
+        infusion = self._portfolio.cash_infusion
+        if (
+            infusion is not None
+            and self._state.cash_infusion_next_date is not None
+            and today >= self._state.cash_infusion_next_date
+        ):
+            self._state.available_cash += infusion.amount
+            # CashInfusion.advance() mutates next_date in place; align it with state, advance, copy back.
+            infusion.next_date = self._state.cash_infusion_next_date
+            infusion.advance()
+            self._state.cash_infusion_next_date = infusion.next_date
+
+        # Persist state at the end of the tick (HWM/peak/infusion always advance,
+        # even on no-change ticks where alert printing is suppressed below).
+        save_atomic(self._state, self._state_path)
 
         # Emit alerts only when the order set changes
         current_keys = {(order.ticker, order.direction, order.shares) for order in filtered if order.shares > 0}
