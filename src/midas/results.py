@@ -16,9 +16,9 @@ from pathlib import Path
 from midas.metrics import (
     StrategyStats,
     _drawdown_series,
-    _pair_sells_with_basis,
     aggregate_strategy_stats,
     compute_annualized_return,
+    pair_sells_with_basis,
 )
 from midas.models import Direction, TradeRecord
 from midas.risk_metrics import RiskHistory, RiskMetrics
@@ -83,7 +83,7 @@ def write_backtest_results(result: BacktestResult, output_dir: Path) -> None:
 
 
 def _write_trades_csv(result: BacktestResult, path: Path) -> None:
-    sell_basis = {id(trade): basis for trade, basis in _pair_sells_with_basis(result.trades, result.basis_per_sell)}
+    sell_basis = {id(trade): basis for trade, basis in pair_sells_with_basis(result.trades, result.basis_per_sell)}
     with open(path, "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(

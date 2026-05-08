@@ -50,7 +50,12 @@ def _drawdown_series(equity_curve: list[tuple[date, float]]) -> list[float]:
     return result
 
 
-def _pair_sells_with_basis(
+# ---------------------------------------------------------------------------
+# Public compute functions
+# ---------------------------------------------------------------------------
+
+
+def pair_sells_with_basis(
     trades: list[TradeRecord],
     basis_per_sell: list[float],
 ) -> list[tuple[TradeRecord, float]]:
@@ -65,11 +70,6 @@ def _pair_sells_with_basis(
         basis = basis_per_sell[idx] if idx < len(basis_per_sell) else trade.price
         paired.append((trade, basis))
     return paired
-
-
-# ---------------------------------------------------------------------------
-# Public compute functions
-# ---------------------------------------------------------------------------
 
 
 def compute_cagr(starting: float, final: float, days: int) -> float:
@@ -159,7 +159,7 @@ def compute_trade_stats(
 
     Breakeven sells (`pnl == 0`) are counted as wins by convention.
     """
-    paired = _pair_sells_with_basis(trades, basis_per_sell)
+    paired = pair_sells_with_basis(trades, basis_per_sell)
     if not paired:
         return 0.0, 0.0, 0.0, 0.0
 
@@ -192,7 +192,7 @@ def compute_strategy_stats(
     basis_per_sell: list[float],
 ) -> list[StrategyStats]:
     """Compute per-(strategy, ticker) trade breakdown."""
-    sell_basis: dict[int, float] = {id(trade): basis for trade, basis in _pair_sells_with_basis(trades, basis_per_sell)}
+    sell_basis: dict[int, float] = {id(trade): basis for trade, basis in pair_sells_with_basis(trades, basis_per_sell)}
 
     by_key: dict[tuple[str, str], list[TradeRecord]] = defaultdict(list)
     for trade in trades:

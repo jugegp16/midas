@@ -20,7 +20,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, timedelta
 
-from midas.metrics import _pair_sells_with_basis
+from midas.metrics import pair_sells_with_basis
 from midas.models import Direction, HoldingPeriod, TaxConfig, TradeRecord
 
 
@@ -74,8 +74,12 @@ def compute_tax_summary(
         One AnnualTaxSummary per calendar year that contained at least one
         SELL or that received a carryforward from the prior year. Sorted by
         year ascending.
+
+        Years with no SELL activity are omitted even if a non-zero
+        ``carry_forward`` is alive — the carry threads forward silently to the
+        next year that has activity.
     """
-    paired = _pair_sells_with_basis(list(trades), list(basis_per_sell))
+    paired = pair_sells_with_basis(list(trades), list(basis_per_sell))
     by_year_st: dict[int, float] = defaultdict(float)
     by_year_lt: dict[int, float] = defaultdict(float)
 
@@ -128,6 +132,8 @@ def compute_tax_summary(
             lt_after_cross -= shave
             remaining_carry -= shave
         # Any still-remaining carry is pure loss applied to ST bucket.
+        # Residual carry after exhausting gains in both buckets is pure ST loss
+        # (carryforward already lost ST/LT character on rollover).
         st_after_cross -= remaining_carry
 
         net_after_cross = st_after_cross + lt_after_cross
@@ -140,8 +146,9 @@ def compute_tax_summary(
             absolute = -net_after_cross
             deductible_loss = min(absolute, config.deductible_loss_cap)
             carry_out = absolute - deductible_loss
-            # Negative tax_owed == credit at ST rate (matches §1211(b) treatment
-            # of net capital loss as an offset against ordinary income).
+            # Negative tax_owed == reduction in tax otherwise owed on ordinary income.
+            # Deduction is capped at TaxConfig.deductible_loss_cap (default $3,000)
+            # per IRC §1211(b); we model the resulting savings as `cap * short_term_rate`.
             tax_owed = -deductible_loss * config.short_term_rate
 
         carry_in = carry_out
@@ -164,7 +171,6 @@ def compute_tax_summary(
 def compute_after_tax_curve(
     equity_curve: Sequence[tuple[date, float]],
     summaries: Sequence[AnnualTaxSummary],
-    end_date: date,
 ) -> list[tuple[date, float]]:
     """Apply each year's tax_owed to *equity_curve* at its payment_date.
 

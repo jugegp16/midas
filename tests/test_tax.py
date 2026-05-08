@@ -149,7 +149,7 @@ def test_after_tax_curve_subtracts_owed_at_payment_date() -> None:
         (date(2027, 4, 15), 1010.0),
         (date(2027, 4, 16), 1020.0),
     ]
-    after_tax = compute_after_tax_curve(gross, summaries, end_date=date(2027, 12, 31))
+    after_tax = compute_after_tax_curve(gross, summaries)
     assert after_tax[0] == (date(2027, 4, 14), 1000.0)
     assert after_tax[1] == (date(2027, 4, 15), 1010.0 - 30.0)
     assert after_tax[2] == (date(2027, 4, 16), 1020.0 - 30.0)
@@ -159,6 +159,6 @@ def test_after_tax_curve_subtracts_owed_at_payment_date() -> None:
 
 def test_after_tax_curve_empty_summaries_returns_gross_copy() -> None:
     gross = [(date(2026, 1, 1), 100.0), (date(2026, 6, 1), 110.0)]
-    result = compute_after_tax_curve(gross, [], end_date=date(2026, 12, 31))
+    result = compute_after_tax_curve(gross, [])
     assert result == gross
     assert result is not gross
