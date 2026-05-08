@@ -103,6 +103,14 @@ def test_header_drift_raises_with_named_divergence(tmp_path: Path) -> None:
         read_trades(path)
 
 
+def test_empty_existing_file_raises(tmp_path: Path) -> None:
+    """A zero-byte existing file is a corruption signal — must raise, not silently return []."""
+    path = tmp_path / "portfolio.state.yaml.trades.csv"
+    path.touch()  # creates a zero-byte file
+    with pytest.raises(TradeLogError, match="empty"):
+        read_trades(path)
+
+
 def test_partial_row_raises_with_line_number(tmp_path: Path) -> None:
     path = tmp_path / "portfolio.state.yaml.trades.csv"
     path.write_text(TRADE_LOG_HEADER + "2026-05-08,AAPL\n")  # 2 fields instead of 11

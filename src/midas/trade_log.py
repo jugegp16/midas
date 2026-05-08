@@ -17,8 +17,11 @@ import datetime
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
+from typing import Literal
 
 from midas.models import Direction, HoldingPeriod, TradeRecord
+
+type PurchaseDate = date | Literal["various"] | None
 
 TRADE_LOG_COLUMNS: tuple[str, ...] = (
     "date",
@@ -50,13 +53,13 @@ class LoggedTrade:
     price: float
     strategy_name: str
     holding_period: HoldingPeriod | None
-    purchase_date: datetime.date | str | None
+    purchase_date: PurchaseDate
     cost_basis: float | None
     realized_pnl: float | None
     return_pct: float | None
 
 
-def _format_purchase_date(value: date | str | None) -> str:
+def _format_purchase_date(value: PurchaseDate) -> str:
     if value is None:
         return ""
     if isinstance(value, str):
@@ -71,8 +74,9 @@ def _format_holding_period(value: HoldingPeriod | None) -> str:
 def append_trade(
     path: Path,
     record: TradeRecord,
+    *,
     cost_basis: float | None,
-    purchase_date: date | str | None,
+    purchase_date: PurchaseDate,
 ) -> None:
     """Append one row to *path*, creating the file with header on first write.
 
@@ -82,8 +86,8 @@ def append_trade(
     are derived from it.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    needs_header = not path.exists() or path.stat().st_size == 0
     with open(path, "a", newline="", encoding="utf-8") as handle:
+        needs_header = handle.tell() == 0
         writer = csv.writer(handle)
         if needs_header:
             writer.writerow(TRADE_LOG_COLUMNS)
@@ -125,11 +129,11 @@ def _parse_holding_period(raw: str) -> HoldingPeriod | None:
         raise TradeLogError(msg) from exc
 
 
-def _parse_purchase_date(raw: str) -> date | str | None:
+def _parse_purchase_date(raw: str) -> PurchaseDate:
     if not raw:
         return None
     if raw == "various":
-        return raw
+        return "various"
     try:
         return date.fromisoformat(raw)
     except ValueError as exc:
@@ -158,8 +162,9 @@ def read_trades(path: Path) -> list[LoggedTrade]:
         reader = csv.reader(handle)
         try:
             header = next(reader)
-        except StopIteration:
-            return []
+        except StopIteration as exc:
+            msg = f"trade-log file {path} exists but is empty"
+            raise TradeLogError(msg) from exc
         if tuple(header) != TRADE_LOG_COLUMNS:
             msg = f"trade-log header drift in {path}: expected {TRADE_LOG_COLUMNS}, got {tuple(header)}"
             raise TradeLogError(msg)
