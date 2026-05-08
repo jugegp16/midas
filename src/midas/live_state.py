@@ -10,6 +10,7 @@ tracking-design.md.
 
 from __future__ import annotations
 
+import logging
 import os
 import tempfile
 from dataclasses import dataclass, field
@@ -19,7 +20,9 @@ from typing import Any
 
 import yaml
 
-from midas.models import PositionLot
+from midas.models import PortfolioConfig, PositionLot
+
+logger = logging.getLogger(__name__)
 
 SCHEMA_VERSION = 1
 
@@ -65,7 +68,7 @@ def save_atomic(state: LiveState, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(prefix=path.name + ".", dir=str(path.parent))
     try:
-        with os.fdopen(fd, "w") as handle:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
             yaml.safe_dump(payload, handle, sort_keys=False)
         os.replace(tmp_name, path)
     except Exception:
@@ -77,7 +80,7 @@ def save_atomic(state: LiveState, path: Path) -> None:
 def load_state(path: Path) -> LiveState:
     """Load state from *path*. Raises ``StateFileError`` on invalid input."""
     try:
-        with open(path) as handle:
+        with open(path, encoding="utf-8") as handle:
             raw = yaml.safe_load(handle)
     except yaml.YAMLError as exc:
         msg = f"failed to parse state file at {path}: {exc}"
@@ -93,6 +96,9 @@ def load_state(path: Path) -> LiveState:
     infusion = raw.get("cash_infusion")
     next_date: date | None = None
     if infusion is not None:
+        if not isinstance(infusion, dict):
+            msg = f"cash_infusion in {path} must be a mapping, got {type(infusion).__name__}"
+            raise StateFileError(msg)
         next_date = infusion.get("next_date")
         if isinstance(next_date, str):
             next_date = date.fromisoformat(next_date)
@@ -115,3 +121,45 @@ def load_state(path: Path) -> LiveState:
         peak_equity=raw.get("peak_equity"),
         lots=lots,
     )
+
+
+def load_or_seed(portfolio: PortfolioConfig, state_path: Path) -> LiveState:
+    """Load state from *state_path*, or seed it from *portfolio* if missing.
+
+    The seed branch creates one ``PositionLot`` per ticker with ``shares > 0``,
+    using the YAML's ``cost_basis`` and ``purchase_date=None`` (we don't know
+    when the operator originally bought; affects ST/LT classification — they
+    can hand-edit later if precision matters).
+
+    Args:
+        portfolio: Portfolio configuration to seed from when no state exists.
+        state_path: Filesystem path of the persisted state YAML.
+
+    Returns:
+        The loaded or freshly-seeded ``LiveState``.
+    """
+    if state_path.exists():
+        return load_state(state_path)
+
+    lots: dict[str, list[PositionLot]] = {}
+    for holding in portfolio.holdings:
+        if holding.shares <= 0:
+            continue
+        lots[holding.ticker] = [
+            PositionLot(
+                shares=holding.shares,
+                purchase_date=None,
+                cost_basis=holding.cost_basis if holding.cost_basis is not None else 0.0,
+            )
+        ]
+
+    state = LiveState(
+        available_cash=portfolio.available_cash,
+        cash_infusion_next_date=portfolio.cash_infusion.next_date if portfolio.cash_infusion else None,
+        high_water_marks={},
+        peak_equity=None,
+        lots=lots,
+    )
+    save_atomic(state, state_path)
+    logger.info("Seeded state at %s from portfolio config", state_path)
+    return state
