@@ -161,11 +161,19 @@ def load_or_seed(portfolio: PortfolioConfig, state_path: Path) -> LiveState:
             )
         ]
 
+    # Seed peak_equity to starting equity so CPPI/drawdown calcs match backtest,
+    # which seeds state.peak_value = state.starting_value at _initialize_state.
+    # The YAML's cost_basis is the operator's basis — for live, that IS the
+    # starting equity baseline. Defensive ``> 0`` keeps zero/negative as None.
+    seed_equity = portfolio.available_cash + sum(
+        holding.shares * (holding.cost_basis or 0.0) for holding in portfolio.holdings if holding.shares > 0
+    )
+
     state = LiveState(
         available_cash=portfolio.available_cash,
         cash_infusion_next_date=portfolio.cash_infusion.next_date if portfolio.cash_infusion else None,
         high_water_marks={},
-        peak_equity=None,
+        peak_equity=seed_equity if seed_equity > 0 else None,
         lots=lots,
     )
     save_atomic(state, state_path)

@@ -95,12 +95,30 @@ def test_load_or_seed_creates_state_from_portfolio(tmp_path: Path) -> None:
     assert path.exists()  # seed wrote the file
     assert state.available_cash == 5000.0
     assert state.cash_infusion_next_date == date(2026, 5, 15)
-    assert state.peak_equity is None
+    # Seed peak_equity = cash + Σ shares * cost_basis
+    # = 5000 + 100*150 + 50*49.76 = 5000 + 15000 + 2488 = 22488
+    assert state.peak_equity == pytest.approx(22488.0)
     assert state.high_water_marks == {}
     assert state.lots == {
         "AAPL": [PositionLot(shares=100.0, purchase_date=None, cost_basis=150.0)],
         "NVDA": [PositionLot(shares=50.0, purchase_date=None, cost_basis=49.76)],
     }
+
+
+def test_load_or_seed_initializes_peak_equity_to_starting_value(tmp_path: Path) -> None:
+    """Backtest seeds state.peak_value = state.starting_value at _initialize_state;
+    live's load_or_seed must do the same so CPPI/drawdown calcs don't diverge
+    on the first tick when prices are below cost basis."""
+    portfolio = PortfolioConfig(
+        holdings=[
+            Holding(ticker="AAPL", shares=10.0, cost_basis=150.0),
+            Holding(ticker="NVDA", shares=20.0, cost_basis=50.0),
+        ],
+        available_cash=500.0,
+    )
+    state = load_or_seed(portfolio, tmp_path / "state.yaml")
+    # 500 + 10*150 + 20*50 = 500 + 1500 + 1000 = 3000
+    assert state.peak_equity == pytest.approx(3000.0)
 
 
 def test_load_or_seed_skips_holdings_with_zero_shares(tmp_path: Path) -> None:

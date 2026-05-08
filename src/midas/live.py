@@ -126,6 +126,21 @@ class LiveEngine:
             close = current_prices[ticker]
             self._state.high_water_marks[ticker] = max(self._state.high_water_marks.get(ticker, close), close)
 
+        # Advance cash infusion if due — credit BEFORE allocator/sizer decisions
+        # so the new cash is available for today's allocations (matches backtest's
+        # _run_day, which credits the infusion at the start of the day).
+        infusion = self._portfolio.cash_infusion
+        if (
+            infusion is not None
+            and self._state.cash_infusion_next_date is not None
+            and today >= self._state.cash_infusion_next_date
+        ):
+            self._state.available_cash += infusion.amount
+            # CashInfusion.advance() mutates next_date in place; align it with state, advance, copy back.
+            infusion.next_date = self._state.cash_infusion_next_date
+            infusion.advance()
+            self._state.cash_infusion_next_date = infusion.next_date
+
         # Current positions + weights (weights feed Option A: neutral=hold).
         # Positions are derived from state lots, not the YAML.
         positions = {ticker: sum(lot.shares for lot in self._state.lots.get(ticker, [])) for ticker in active_tickers}
@@ -226,19 +241,6 @@ class LiveEngine:
             positions_after[ticker] * current_prices[ticker] for ticker in active_tickers
         )
         self._state.peak_equity = max(self._state.peak_equity or 0.0, current_equity)
-
-        # Advance cash infusion if due.
-        infusion = self._portfolio.cash_infusion
-        if (
-            infusion is not None
-            and self._state.cash_infusion_next_date is not None
-            and today >= self._state.cash_infusion_next_date
-        ):
-            self._state.available_cash += infusion.amount
-            # CashInfusion.advance() mutates next_date in place; align it with state, advance, copy back.
-            infusion.next_date = self._state.cash_infusion_next_date
-            infusion.advance()
-            self._state.cash_infusion_next_date = infusion.next_date
 
         # Persist state at the end of the tick (HWM/peak/infusion always advance,
         # even on no-change ticks where alert printing is suppressed below).
