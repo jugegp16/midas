@@ -26,6 +26,7 @@ from midas.live_state import (
     apply_buy,
     apply_sell,
     load_or_seed,
+    resolve_purchase_date,
     save_atomic,
 )
 from midas.models import (
@@ -39,26 +40,9 @@ from midas.order_sizer import OrderSizer
 from midas.output import print_alert, print_status
 from midas.restrictions import RestrictionTracker
 from midas.strategies.base import ExitRule, max_warmup, warmup_bars_to_calendar_days
-from midas.trade_log import PurchaseDate, append_trade
+from midas.trade_log import append_trade
 
 logger = logging.getLogger(__name__)
-
-
-def _resolve_purchase_date(dates: tuple[date | None, ...]) -> PurchaseDate:
-    """Map a tuple of consumed lots' purchase dates to a single CSV value.
-
-    - Empty tuple -> ``None``.
-    - All consumed lots share one ``purchase_date`` (a date OR all-``None``)
-      -> that single value.
-    - Multiple distinct values, including the ``date + None`` mix -> the
-      literal string ``'various'``.
-    """
-    if not dates:
-        return None
-    unique = set(dates)
-    if len(unique) == 1:
-        return next(iter(unique))
-    return "various"
 
 
 class LiveEngine:
@@ -344,6 +328,9 @@ class LiveEngine:
 
         # Apply assumed fills to the in-memory state. Capture per-SELL breakdowns
         # so the trade-log append below has shares/basis/dates per ST/LT bucket.
+        # Order is a frozen dataclass but contains an OrderContext with a dict
+        # field (contributions), making it unhashable. Use id(order) — safe
+        # because filtered is a stable list across both passes within _tick.
         sell_breakdowns: dict[int, SellBreakdown] = {}
         for order in filtered:
             if order.shares <= 0:
@@ -393,7 +380,7 @@ class LiveEngine:
             else:
                 breakdown = sell_breakdowns[id(order)]
                 if breakdown.st_shares > 0:
-                    st_purchase = _resolve_purchase_date(breakdown.st_purchase_dates)
+                    st_purchase = resolve_purchase_date(breakdown.st_purchase_dates)
                     st_record = TradeRecord(
                         date=today,
                         ticker=order.ticker,
@@ -411,7 +398,7 @@ class LiveEngine:
                         purchase_date=st_purchase,
                     )
                 if breakdown.lt_shares > 0:
-                    lt_purchase = _resolve_purchase_date(breakdown.lt_purchase_dates)
+                    lt_purchase = resolve_purchase_date(breakdown.lt_purchase_dates)
                     lt_record = TradeRecord(
                         date=today,
                         ticker=order.ticker,

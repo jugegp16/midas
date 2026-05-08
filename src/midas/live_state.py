@@ -18,13 +18,36 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 
 from midas.models import PortfolioConfig, PositionLot
 
 logger = logging.getLogger(__name__)
+
+type PurchaseDate = date | Literal["various"] | None
+
+
+def resolve_purchase_date(dates: tuple[date | None, ...]) -> PurchaseDate:
+    """Map a tuple of consumed lots' purchase dates to a single CSV value.
+
+    - Empty tuple -> ``None``.
+    - All consumed lots share one ``purchase_date`` (a date OR all-``None``)
+      -> that single value.
+    - Multiple distinct values, including the ``date + None`` mix -> the
+      literal string ``'various'``.
+
+    Used by both the live engine and the backtest engine to derive the
+    ``purchase_date`` column on a SELL bucket row in the trade log.
+    """
+    if not dates:
+        return None
+    unique = set(dates)
+    if len(unique) == 1:
+        return next(iter(unique))
+    return "various"
+
 
 SCHEMA_VERSION = 1
 # When bumping SCHEMA_VERSION, add a migration path in ``load_state`` so

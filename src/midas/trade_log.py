@@ -17,11 +17,9 @@ import datetime
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
-from typing import Literal
 
+from midas.live_state import PurchaseDate as PurchaseDate  # re-export
 from midas.models import Direction, HoldingPeriod, TradeRecord
-
-type PurchaseDate = date | Literal["various"] | None
 
 TRADE_LOG_COLUMNS: tuple[str, ...] = (
     "date",

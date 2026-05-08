@@ -13,7 +13,7 @@ import pandas as pd
 
 from midas.allocator import AllocationResult, Allocator, AllocatorRiskTelemetry
 from midas.data.price_history import PriceHistory
-from midas.live_state import aggregate_cost_basis, consume_lots_fifo
+from midas.live_state import aggregate_cost_basis, consume_lots_fifo, resolve_purchase_date
 from midas.metrics import (
     compute_annualized_return,
     compute_cagr,
@@ -883,35 +883,6 @@ class BacktestEngine:
             state.cash -= order.estimated_value
 
     @staticmethod
-    def _resolve_purchase_date(dates: tuple[date | None, ...]) -> date | str | None:
-        """Map a tuple of consumed lots' purchase dates to a single CSV value.
-
-        - Empty tuple → ``None``.
-        - All consumed lots share one ``purchase_date`` (a date OR all-``None``)
-          → that single value (the date, or ``None`` if every consumed lot was
-          unseeded).
-        - Multiple distinct values, including the ``date + None`` mix → the
-          literal string ``'various'`` (Schedule D convention for mixed-lot
-          sales).
-
-        Args:
-            dates: Purchase dates of the lots consumed by a single SELL bucket,
-                in FIFO order. May contain ``None`` for unseeded lots.
-
-        Returns:
-            The single shared date, ``None`` (empty tuple or all unseeded
-            lots), or the literal string ``'various'`` when consumed lots
-            disagree.
-        """
-        if not dates:
-            return None
-        unique = set(dates)
-        if len(unique) == 1:
-            only = next(iter(unique))
-            return only  # may be a date or None
-        return "various"
-
-    @staticmethod
     def _fifo_consumed_basis(lots: list[PositionLot], shares: float) -> float:
         """Share-weighted cost basis of the first *shares* shares in FIFO order.
 
@@ -1017,7 +988,7 @@ class BacktestEngine:
                         price=order.price,
                         strategy_name=strategy_name,
                         holding_period=HoldingPeriod.SHORT_TERM,
-                        purchase_date=self._resolve_purchase_date(breakdown.st_purchase_dates),
+                        purchase_date=resolve_purchase_date(breakdown.st_purchase_dates),
                     ),
                     st_weighted_basis / st_shares,
                 )
@@ -1033,7 +1004,7 @@ class BacktestEngine:
                         price=order.price,
                         strategy_name=strategy_name,
                         holding_period=HoldingPeriod.LONG_TERM,
-                        purchase_date=self._resolve_purchase_date(breakdown.lt_purchase_dates),
+                        purchase_date=resolve_purchase_date(breakdown.lt_purchase_dates),
                     ),
                     lt_weighted_basis / lt_shares,
                 )
