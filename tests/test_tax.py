@@ -162,3 +162,26 @@ def test_after_tax_curve_empty_summaries_returns_gross_copy() -> None:
     result = compute_after_tax_curve(gross, [])
     assert result == gross
     assert result is not gross
+
+
+def test_carry_forward_threads_through_inactive_year() -> None:
+    """A non-zero carry_forward survives years with no SELL activity.
+
+    Year 1 has $5K loss ($2K carry). Year 2 has no sells (no summary
+    emitted). Year 3 has a $1K gain. The $2K carry should still be
+    applied at Year 3, producing a $1K loss after netting.
+    """
+    trades = [
+        _sell(2026, HoldingPeriod.SHORT_TERM, 100.0, 30.0),  # -$5000 vs $80 basis
+        _sell(2028, HoldingPeriod.SHORT_TERM, 50.0, 30.0),  # +$1000 vs $10 basis
+    ]
+    basis = [80.0, 10.0]
+    summary = compute_tax_summary(trades, basis, CONFIG, end_date=date(2028, 12, 31))
+    # Two summaries: 2026 and 2028 (2027 omitted — no activity).
+    assert len(summary) == 2
+    assert summary[0].year == 2026
+    assert summary[0].carry_forward == pytest.approx(2000.0)
+    assert summary[1].year == 2028
+    assert summary[1].net_after_cross == pytest.approx(-1000.0)  # $1K gain - $2K carry = -$1K
+    assert summary[1].deductible_loss == pytest.approx(1000.0)
+    assert summary[1].carry_forward == 0.0

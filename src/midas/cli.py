@@ -344,7 +344,7 @@ def tax_report(
     if not rows:
         click.echo(f"No realized sales in {period_label}.")
         if output is not None:
-            Path(output).write_text(",".join(_TAX_REPORT_COLUMNS) + "\n")
+            Path(output).write_text(",".join(TAX_REPORT_COLUMNS) + "\n")
         return
 
     out_path = Path(output) if output is not None else Path(f"schedule_d_{period_label}.csv")
@@ -627,7 +627,7 @@ def list_strategies() -> None:
     print_strategy_table([cls() for cls in STRATEGY_REGISTRY.values()])
 
 
-_TAX_REPORT_COLUMNS = (
+TAX_REPORT_COLUMNS = (
     "ticker",
     "shares",
     "purchase_date",
@@ -706,7 +706,7 @@ def _write_tax_report_csv(
 
     with open(path, "w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
-        writer.writerow(_TAX_REPORT_COLUMNS)
+        writer.writerow(TAX_REPORT_COLUMNS)
         for row, basis in zip(rows, basis_per_sell, strict=True):
             proceeds = row.shares * row.price
             pnl = proceeds - basis * row.shares
