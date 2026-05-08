@@ -35,6 +35,19 @@ SCHEMA_VERSION = 1
 # ``docs/specs/2026-05-07-live-per-lot-tracking-design.md`` for context.
 
 
+class _NoAliasSafeDumper(yaml.SafeDumper):
+    """SafeDumper that emits inline values instead of anchors and aliases.
+
+    PyYAML auto-generates ``&id001`` / ``*id001`` for repeated Python
+    objects (e.g. multiple lots sharing the same ``date`` instance). Valid
+    YAML but unfriendly for humans hand-editing the state file. This
+    dumper writes each occurrence inline.
+    """
+
+
+_NoAliasSafeDumper.ignore_aliases = lambda self, data: True  # type: ignore[method-assign]
+
+
 class StateFileError(ValueError):
     """Raised on schema version mismatch, parse failure, or invalid state."""
 
@@ -77,7 +90,7 @@ def save_atomic(state: LiveState, path: Path) -> None:
     fd, tmp_name = tempfile.mkstemp(prefix=path.name + ".", dir=str(path.parent))
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            yaml.safe_dump(payload, handle, sort_keys=False)
+            yaml.dump(payload, handle, Dumper=_NoAliasSafeDumper, sort_keys=False)
             # fsync the tempfile so the data is on disk before the rename.
             # Without this, ``os.replace`` is atomic w.r.t. the dirent but the
             # data blocks may still be in page cache; a power-loss event can

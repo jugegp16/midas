@@ -387,3 +387,31 @@ def test_apply_sell_raises_on_oversell() -> None:
     )
     with pytest.raises(AssertionError, match="oversell"):
         apply_sell(state, "AAPL", shares=999.0, price=20.0, day=date(2026, 5, 7))
+
+
+def test_save_atomic_does_not_emit_yaml_aliases(tmp_path: Path) -> None:
+    """Multiple lots sharing the same purchase_date object would otherwise
+    cause PyYAML to emit ``&id001`` / ``*id001`` anchors and aliases —
+    valid YAML, but ugly when hand-editing the state file."""
+    same_day = date(2026, 4, 12)
+    state = LiveState(
+        available_cash=0.0,
+        cash_infusion_next_date=same_day,  # third reuse of same_day
+        lots={
+            "AAPL": [
+                PositionLot(shares=10.0, purchase_date=same_day, cost_basis=150.0),
+                PositionLot(shares=20.0, purchase_date=same_day, cost_basis=160.0),
+            ],
+            "NVDA": [PositionLot(shares=5.0, purchase_date=same_day, cost_basis=49.76)],
+        },
+    )
+    path = tmp_path / "state.yaml"
+    save_atomic(state, path)
+
+    raw = path.read_text()
+    assert "&id" not in raw, f"unexpected anchor in state file:\n{raw}"
+    assert "*id" not in raw, f"unexpected alias in state file:\n{raw}"
+
+    # Confirm round-trip still works after disabling aliases.
+    loaded = load_state(path)
+    assert loaded == state
