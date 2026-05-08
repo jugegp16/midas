@@ -11,6 +11,7 @@ tracking-design.md.
 from __future__ import annotations
 
 import logging
+import math
 import os
 import tempfile
 from collections.abc import Sequence
@@ -204,7 +205,9 @@ def _check_for_drift(state: LiveState, portfolio: PortfolioConfig) -> None:
                 holding.shares,
                 held,
             )
-    if portfolio.available_cash != state.available_cash:
+    # Tolerate IEEE-754 round-trip noise that accumulates over many ticks; only
+    # warn on drift that exceeds half a cent.
+    if not math.isclose(portfolio.available_cash, state.available_cash, abs_tol=0.005):
         logger.warning(
             "available_cash drift: portfolio.yaml has %s but state has %s; trusting state",
             portfolio.available_cash,
@@ -317,6 +320,11 @@ def apply_sell(state: LiveState, ticker: str, shares: float, price: float, day: 
     """
     lots = state.lots.get(ticker, [])
     breakdown = consume_lots_fifo(lots, shares, day)
+    total_consumed = breakdown.st_shares + breakdown.lt_shares
+    # Mirrors backtest's ``assert new_position >= 0`` invariant: oversells must
+    # be clamped upstream by ``OrderSizer.size_sells``. ``math.isclose`` tolerates
+    # IEEE-754 drift while still catching genuine bugs.
+    assert math.isclose(total_consumed, shares), f"oversell on {ticker}: requested {shares}, consumed {total_consumed}"
     state.available_cash += shares * price
     if not lots:
         state.lots.pop(ticker, None)

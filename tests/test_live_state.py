@@ -330,3 +330,17 @@ def test_apply_sell_keeps_ticker_with_remaining_shares() -> None:
     apply_sell(state, "AAPL", shares=4.0, price=20.0, day=date(2026, 5, 7))
     assert "AAPL" in state.lots
     assert state.lots["AAPL"][0].shares == 6.0
+
+
+def test_apply_sell_raises_on_oversell() -> None:
+    """Mirrors backtest's ``assert new_position >= 0`` invariant: ``apply_sell``
+    must refuse to credit cash for shares that don't exist. ``OrderSizer.size_sells``
+    clamps in production; this guards against a future regression silently
+    fabricating cash."""
+    state = LiveState(
+        available_cash=0.0,
+        cash_infusion_next_date=None,
+        lots={"AAPL": [PositionLot(shares=10.0, purchase_date=None, cost_basis=10.0)]},
+    )
+    with pytest.raises(AssertionError, match="oversell"):
+        apply_sell(state, "AAPL", shares=999.0, price=20.0, day=date(2026, 5, 7))

@@ -15,7 +15,10 @@ from midas.live_state import LiveState, aggregate_cost_basis, load_state, save_a
 from midas.models import (
     AllocationConstraints,
     CashInfusion,
+    Direction,
     Holding,
+    Order,
+    OrderContext,
     PortfolioConfig,
     PositionLot,
 )
@@ -207,3 +210,59 @@ def test_cash_infusion_advances_when_due(tmp_path: Path, monkeypatch: pytest.Mon
     state = load_state(state_path)
     assert state.available_cash == pytest.approx(500.0 + 1500.0)
     assert state.cash_infusion_next_date == date(2026, 5, 15)  # +14 days for biweekly
+
+
+def test_alert_cash_display_does_not_double_count(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``apply_buy``/``apply_sell`` mutate ``state.available_cash`` in place,
+    so the per-alert running subtotal must seed from the *pre-fill* baseline.
+    Otherwise a single $100 BUY against $1000 cash would print "$800" instead
+    of "$900" — both cash mutation and the printed delta apply.
+    """
+    portfolio = PortfolioConfig(
+        holdings=[],  # no held positions; only a buy will fire
+        available_cash=1000.0,
+    )
+    state_path = tmp_path / "state.yaml"
+    provider = _make_provider({"AAPL": [100.0]}, [date(2026, 5, 7)])
+    engine = LiveEngine(
+        portfolio=portfolio,
+        allocator=Allocator(entries=[], constraints=AllocationConstraints(), n_tickers=1),
+        order_sizer=OrderSizer(),
+        provider=provider,
+        state_path=state_path,
+    )
+
+    # Inject a synthetic $100 BUY directly into the order sizer's buy pass; this
+    # bypasses allocator/strategy plumbing while exercising the real apply-fills
+    # and alert-emission paths in ``_tick``.
+    fake_buy = Order(
+        ticker="AAPL",
+        direction=Direction.BUY,
+        shares=1.0,
+        price=100.0,
+        estimated_value=100.0,
+        context=OrderContext(
+            contributions={"fake": 1.0},
+            blended_score=1.0,
+            target_weight=1.0,
+            current_weight=0.0,
+            reason="test",
+            source="fake",
+        ),
+    )
+    monkeypatch.setattr(engine._order_sizer, "size_buys", lambda *a, **kw: [fake_buy])
+
+    captured: list[float] = []
+
+    def capture_alert(order: Order, remaining_cash: float, *_args: object, **_kw: object) -> None:
+        captured.append(remaining_cash)
+
+    monkeypatch.setattr("midas.live.print_alert", capture_alert)
+
+    engine._tick(["AAPL"])
+
+    # Pre-fill cash $1000 minus $100 buy = $900. If the bug returns,
+    # state.available_cash (already $900 after apply_buy) would be debited again
+    # to $800.
+    assert captured == [pytest.approx(900.0)]
+    assert engine._state.available_cash == pytest.approx(900.0)

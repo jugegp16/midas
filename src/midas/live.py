@@ -224,6 +224,11 @@ class LiveEngine:
 
         filtered = exit_orders + buy_orders
 
+        # Capture the pre-fill cash baseline for the alert-emission loop below.
+        # apply_buy/apply_sell mutate state.available_cash, so seeding the
+        # running subtotal from state after fills would double-count.
+        pre_fill_cash = self._state.available_cash
+
         # Apply assumed fills to the in-memory state.
         for order in filtered:
             if order.shares <= 0:
@@ -253,7 +258,7 @@ class LiveEngine:
         self._last_order_keys = current_keys
 
         now = datetime.now(tz=UTC)
-        remaining_cash = self._state.available_cash
+        remaining_cash = pre_fill_cash
         for order in filtered:
             if order.shares <= 0:
                 continue
