@@ -160,7 +160,7 @@ def backtest(
 ) -> None:
     """Run a backtest over historical data."""
     port = load_portfolio(Path(portfolio))
-    strat_configs, constraints, risk_config, _ = (
+    strat_configs, constraints, risk_config, tax_config = (
         load_strategies(Path(strategies)) if strategies else (None, AllocationConstraints(), RiskConfig(), None)
     )
 
@@ -186,6 +186,7 @@ def backtest(
         enable_split=not no_split,
         log_fn=print_status,
         execution_mode=execution_mode,
+        tax_config=tax_config,
     )
 
     print_status("Running backtest...")

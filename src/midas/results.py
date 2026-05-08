@@ -22,6 +22,7 @@ from midas.metrics import (
 )
 from midas.models import Direction, TradeRecord
 from midas.risk_metrics import RiskHistory, RiskMetrics
+from midas.tax import AnnualTaxSummary
 from midas.trade_log import format_holding_period, format_purchase_date
 
 
@@ -62,6 +63,13 @@ class BacktestResult:
     risk_history: RiskHistory | None = None  # per-bar risk telemetry across the run
     bh_equity_curve: list[tuple[date, float]] = field(default_factory=list)
     """Per-bar buy-and-hold equity, parallel to ``equity_curve``."""
+    after_tax_final_value: float | None = None
+    after_tax_total_return: float | None = None
+    after_tax_cagr: float | None = None
+    after_tax_twr: float | None = None
+    after_tax_equity_curve: list[tuple[date, float]] = field(default_factory=list)
+    tax_cost_ratio: float | None = None
+    tax_summary: list[AnnualTaxSummary] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -123,11 +131,23 @@ def _write_trades_csv(result: BacktestResult, path: Path) -> None:
 
 def _write_equity_curve_csv(result: BacktestResult, path: Path) -> None:
     drawdowns = _drawdown_series(result.equity_curve)
+    has_after_tax = len(result.after_tax_equity_curve) == len(result.equity_curve) and bool(
+        result.after_tax_equity_curve
+    )
+    after_tax_by_date: dict[date, float] = (
+        {dt: nav for dt, nav in result.after_tax_equity_curve} if has_after_tax else {}
+    )
     with open(path, "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["date", "nav", "drawdown"])
+        header = ["date", "nav", "drawdown"]
+        if has_after_tax:
+            header.append("nav_after_tax")
+        writer.writerow(header)
         for (dt, nav), drawdown in zip(result.equity_curve, drawdowns, strict=True):
-            writer.writerow([dt.isoformat(), round(nav, 2), round(drawdown, 6)])
+            row: list[object] = [dt.isoformat(), round(nav, 2), round(drawdown, 6)]
+            if has_after_tax:
+                row.append(round(after_tax_by_date.get(dt, nav), 2))
+            writer.writerow(row)
 
 
 def _write_summary_json(result: BacktestResult, path: Path) -> None:
@@ -175,6 +195,32 @@ def _write_summary_json(result: BacktestResult, path: Path) -> None:
             "train_trades": len(result.train_trades),
             "test_trades": len(result.test_trades),
         }
+
+    if result.after_tax_final_value is not None:
+        summary["after_tax_final_value"] = result.after_tax_final_value
+        if result.after_tax_total_return is not None:
+            summary["after_tax_total_return"] = round(result.after_tax_total_return, 6)
+        if result.after_tax_cagr is not None:
+            summary["after_tax_cagr"] = round(result.after_tax_cagr, 6)
+        if result.after_tax_twr is not None:
+            summary["after_tax_twr"] = round(result.after_tax_twr, 6)
+        if result.tax_cost_ratio is not None:
+            summary["tax_cost_ratio"] = round(result.tax_cost_ratio, 6)
+
+    if result.tax_summary:
+        summary["tax_summary"] = [
+            {
+                "year": s.year,
+                "st_realized": round(s.st_realized, 4),
+                "lt_realized": round(s.lt_realized, 4),
+                "net_after_cross": round(s.net_after_cross, 4),
+                "deductible_loss": round(s.deductible_loss, 4),
+                "carry_forward": round(s.carry_forward, 4),
+                "tax_owed": round(s.tax_owed, 4),
+                "payment_date": s.payment_date.isoformat(),
+            }
+            for s in result.tax_summary
+        ]
 
     with open(path, "w") as f:
         json.dump(summary, f, indent=2)

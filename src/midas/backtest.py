@@ -30,6 +30,7 @@ from midas.models import (
     Order,
     PortfolioConfig,
     PositionLot,
+    TaxConfig,
     TradeRecord,
 )
 from midas.order_sizer import OrderSizer
@@ -38,6 +39,7 @@ from midas.results import BacktestResult
 from midas.risk import per_ticker_vol_contribution
 from midas.risk_metrics import RiskHistory, compute_risk_metrics
 from midas.strategies.base import ExitRule, max_warmup
+from midas.tax import AnnualTaxSummary, compute_after_tax_curve, compute_tax_summary
 
 # ---------------------------------------------------------------------------
 # Constants & type aliases
@@ -263,6 +265,7 @@ class BacktestEngine:
         enable_split: bool = True,
         log_fn: Callable[[str], None] | None = None,
         execution_mode: ExecutionMode = "next_open",
+        tax_config: TaxConfig | None = None,
     ) -> None:
         self._allocator = allocator
         self._order_sizer = order_sizer
@@ -272,6 +275,7 @@ class BacktestEngine:
         self._enable_split = enable_split
         self._log = log_fn or (lambda _msg: None)
         self._execution_mode: ExecutionMode = execution_mode
+        self._tax_config = tax_config
 
     def run(
         self,
@@ -1126,6 +1130,41 @@ class BacktestEngine:
             for strat, share in attr.items():
                 attributed_strategy_pnl[strat] = attributed_strategy_pnl.get(strat, 0.0) + ticker_unrealized * share
 
+        # After-tax accounting (opt-in via TaxConfig). When tax_config is None all
+        # fields stay at their dataclass defaults — no behavior change for users
+        # who don't configure tax rates.
+        after_tax_final_value: float | None = None
+        after_tax_total_return: float | None = None
+        after_tax_cagr_value: float | None = None
+        after_tax_twr_value: float | None = None
+        after_tax_curve: list[tuple[date, float]] = []
+        tax_cost_ratio: float | None = None
+        tax_summary: list[AnnualTaxSummary] = []
+
+        if self._tax_config is not None:
+            end_d = trading_days[-1]
+            tax_summary = compute_tax_summary(
+                state.trades,
+                state.basis_per_sell,
+                self._tax_config,
+                end_date=end_d,
+            )
+            after_tax_curve = compute_after_tax_curve(state.equity_curve, tax_summary)
+            if after_tax_curve:
+                after_tax_final_value = after_tax_curve[-1][1]
+                if starting_val > 0:
+                    after_tax_total_return = (after_tax_final_value - starting_val) / starting_val
+                    after_tax_cagr_value = compute_cagr(starting_val, after_tax_final_value, total_days)
+                    # Approximation: scale gross TWR by the after-tax/gross final-value
+                    # ratio. Tax payments are pointwise withdrawals from the curve, so
+                    # this is a reasonable single-number approximation. A bar-by-bar
+                    # TWR re-derivation would require sub-period boundaries that the
+                    # current state machine doesn't expose.
+                    after_tax_twr_value = (
+                        ((1.0 + twr) * (after_tax_final_value / final_value)) - 1.0 if final_value > 0 else twr
+                    )
+                    tax_cost_ratio = (cagr - after_tax_cagr_value) / cagr if cagr > 0 else 0.0
+
         return BacktestResult(
             trades=state.trades,
             final_value=round(final_value, 2),
@@ -1166,6 +1205,13 @@ class BacktestEngine:
             ),
             risk_history=state.risk_history,
             bh_equity_curve=state.bh_equity_curve,
+            after_tax_final_value=(round(after_tax_final_value, 2) if after_tax_final_value is not None else None),
+            after_tax_total_return=(round(after_tax_total_return, 4) if after_tax_total_return is not None else None),
+            after_tax_cagr=(round(after_tax_cagr_value, 4) if after_tax_cagr_value is not None else None),
+            after_tax_twr=(round(after_tax_twr_value, 4) if after_tax_twr_value is not None else None),
+            after_tax_equity_curve=after_tax_curve,
+            tax_cost_ratio=(round(tax_cost_ratio, 6) if tax_cost_ratio is not None else None),
+            tax_summary=tax_summary,
         )
 
     def _end_state_vol_contribution(
