@@ -301,3 +301,14 @@ def test_apply_sell_drops_empty_ticker_entry() -> None:
     )
     apply_sell(state, "AAPL", shares=10.0, price=20.0, day=date(2026, 5, 7))
     assert "AAPL" not in state.lots  # cleared
+
+
+def test_apply_sell_keeps_ticker_with_remaining_shares() -> None:
+    state = LiveState(
+        available_cash=0.0,
+        cash_infusion_next_date=None,
+        lots={"AAPL": [PositionLot(shares=10.0, purchase_date=None, cost_basis=10.0)]},
+    )
+    apply_sell(state, "AAPL", shares=4.0, price=20.0, day=date(2026, 5, 7))
+    assert "AAPL" in state.lots
+    assert state.lots["AAPL"][0].shares == 6.0

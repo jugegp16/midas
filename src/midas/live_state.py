@@ -312,6 +312,6 @@ def apply_sell(state: LiveState, ticker: str, shares: float, price: float, day: 
     state.available_cash += shares * price
     if not lots:
         state.lots.pop(ticker, None)
-    st_pnl = breakdown.st_shares * (price - breakdown.st_basis) if breakdown.st_shares > 0 else 0.0
-    lt_pnl = breakdown.lt_shares * (price - breakdown.lt_basis) if breakdown.lt_shares > 0 else 0.0
+    st_pnl = breakdown.st_shares * price - breakdown.st_weighted
+    lt_pnl = breakdown.lt_shares * price - breakdown.lt_weighted
     return st_pnl, lt_pnl
