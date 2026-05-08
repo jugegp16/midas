@@ -266,3 +266,129 @@ def test_alert_cash_display_does_not_double_count(tmp_path: Path, monkeypatch: p
     # to $800.
     assert captured == [pytest.approx(900.0)]
     assert engine._state.available_cash == pytest.approx(900.0)
+
+
+def test_tick_passes_current_drawdown_to_allocator(tmp_path: Path) -> None:
+    """``_tick`` must compute ``(peak_equity - total_value) / peak_equity`` from
+    persisted state and pass it as ``current_drawdown`` to the allocator. Without
+    this, the CPPI overlay is inert in live regardless of how far below peak the
+    portfolio sits — the headline scope-1 fix this PR claims to deliver. (Earlier
+    iterations let it default to 0.0, leaving CPPI a no-op even when peak_equity
+    persistence was present.)
+    """
+    portfolio = PortfolioConfig(
+        holdings=[Holding(ticker="AAPL", shares=10.0, cost_basis=100.0)],
+        available_cash=0.0,
+    )
+    state_path = tmp_path / "state.yaml"
+    # Pre-seed state with peak_equity=$2000 so the current $800 portfolio is
+    # 60% below peak — non-trivial drawdown that should flow through.
+    seeded = LiveState(
+        available_cash=0.0,
+        cash_infusion_next_date=None,
+        peak_equity=2000.0,
+        lots={"AAPL": [PositionLot(shares=10.0, purchase_date=None, cost_basis=100.0)]},
+    )
+    save_atomic(seeded, state_path)
+
+    provider = _make_provider({"AAPL": [80.0]}, [date(2026, 5, 7)])
+    captured_kwargs: dict[str, object] = {}
+    allocator = Allocator(entries=[], constraints=AllocationConstraints(), n_tickers=1)
+
+    original_allocate = allocator.allocate
+
+    def capturing_allocate(*args: object, **kwargs: object) -> object:
+        captured_kwargs.update(kwargs)
+        return original_allocate(*args, **kwargs)  # type: ignore[arg-type]
+
+    allocator.allocate = capturing_allocate  # type: ignore[method-assign]
+
+    engine = LiveEngine(
+        portfolio=portfolio,
+        allocator=allocator,
+        order_sizer=OrderSizer(),
+        provider=provider,
+        state_path=state_path,
+    )
+    engine._tick(["AAPL"])
+
+    # total_value = $0 cash + 10 shares * $80 = $800. peak = $2000.
+    # current_drawdown = (2000 - 800) / 2000 = 0.6
+    assert captured_kwargs["current_drawdown"] == pytest.approx(0.6)
+
+
+def test_tick_does_not_advance_hwm_for_unheld_tickers(tmp_path: Path) -> None:
+    """HWM must only ratchet for tickers we actually hold. Otherwise a ticker
+    that ran up before the strategy first bought it would seed ``TrailingStop``
+    against a pre-purchase peak — silently more conservative than backtest,
+    which only tracks HWM on positions with shares > 0.
+    """
+    portfolio = PortfolioConfig(
+        holdings=[Holding(ticker="AAPL", shares=0.0, cost_basis=None)],
+        available_cash=10000.0,
+    )
+    state_path = tmp_path / "state.yaml"
+    seeded = LiveState(
+        available_cash=10000.0,
+        cash_infusion_next_date=None,
+        # No lots → not held. AAPL is on the watchlist but has zero shares.
+        lots={},
+    )
+    save_atomic(seeded, state_path)
+
+    provider = _make_provider({"AAPL": [200.0]}, [date(2026, 5, 7)])
+    engine = LiveEngine(
+        portfolio=portfolio,
+        allocator=Allocator(entries=[], constraints=AllocationConstraints(), n_tickers=1),
+        order_sizer=OrderSizer(),
+        provider=provider,
+        state_path=state_path,
+    )
+    engine._tick(["AAPL"])
+
+    assert "AAPL" not in engine._state.high_water_marks, (
+        "HWM should not be set for an unheld ticker; otherwise TrailingStop seeds against pre-purchase peaks"
+    )
+
+
+def test_lockfile_prevents_concurrent_engines(tmp_path: Path) -> None:
+    """Two ``LiveEngine``s against the same state file would otherwise both
+    load, both compute, both write — ``os.replace`` would pick a winner and
+    silently drop the loser's fills. The advisory lock turns this into a clear
+    "another midas live is already running" error.
+    """
+    portfolio = PortfolioConfig(
+        holdings=[Holding(ticker="AAPL", shares=10.0, cost_basis=100.0)],
+        available_cash=0.0,
+    )
+    state_path = tmp_path / "state.yaml"
+    provider = _make_provider({"AAPL": [100.0]}, [date(2026, 5, 7)])
+
+    first = LiveEngine(
+        portfolio=portfolio,
+        allocator=Allocator(entries=[], constraints=AllocationConstraints(), n_tickers=1),
+        order_sizer=OrderSizer(),
+        provider=provider,
+        state_path=state_path,
+    )
+    try:
+        with pytest.raises(RuntimeError, match="another midas live process"):
+            LiveEngine(
+                portfolio=portfolio,
+                allocator=Allocator(entries=[], constraints=AllocationConstraints(), n_tickers=1),
+                order_sizer=OrderSizer(),
+                provider=provider,
+                state_path=state_path,
+            )
+    finally:
+        first.close()
+
+    # After close(), a fresh engine should acquire the lock cleanly.
+    second = LiveEngine(
+        portfolio=portfolio,
+        allocator=Allocator(entries=[], constraints=AllocationConstraints(), n_tickers=1),
+        order_sizer=OrderSizer(),
+        provider=provider,
+        state_path=state_path,
+    )
+    second.close()

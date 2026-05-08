@@ -27,6 +27,12 @@ from midas.models import PortfolioConfig, PositionLot
 logger = logging.getLogger(__name__)
 
 SCHEMA_VERSION = 1
+# When bumping SCHEMA_VERSION, add a migration path in ``load_state`` so
+# v1 files don't fail with ``StateFileError`` on first load after upgrade.
+# The simplest pattern: read the version, dispatch to a per-version
+# upgrader that returns the v(N) payload dict, then build ``LiveState``
+# from that. See the design spec at
+# ``docs/specs/2026-05-07-live-per-lot-tracking-design.md`` for context.
 
 
 class StateFileError(ValueError):
@@ -72,11 +78,28 @@ def save_atomic(state: LiveState, path: Path) -> None:
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             yaml.safe_dump(payload, handle, sort_keys=False)
+            # fsync the tempfile so the data is on disk before the rename.
+            # Without this, ``os.replace`` is atomic w.r.t. the dirent but the
+            # data blocks may still be in page cache; a power-loss event can
+            # leave the canonical path pointing at unflushed bytes.
+            handle.flush()
+            os.fsync(handle.fileno())
         os.replace(tmp_name, path)
     except Exception:
         if os.path.exists(tmp_name):
             os.unlink(tmp_name)
         raise
+    # fsync the parent directory so the rename's dirent is durable. Best-
+    # effort: APFS / Windows treat this as a no-op or raise, which is fine —
+    # we still get the data fsync above.
+    try:
+        dir_fd = os.open(str(path.parent), os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+    except OSError:
+        pass
 
 
 def load_state(path: Path) -> LiveState:
@@ -205,6 +228,20 @@ def _check_for_drift(state: LiveState, portfolio: PortfolioConfig) -> None:
                 holding.shares,
                 held,
             )
+        # Cost-basis drift surfaces hand-edits to portfolio.yaml that the
+        # operator likely intended to take effect. State wins (this is the
+        # documented policy — runtime fills are authoritative), so this is a
+        # warn-not-raise. The 1% relative tolerance ignores accumulated
+        # weighted-average drift after many fills against an unchanged YAML.
+        yaml_basis = holding.cost_basis if holding.cost_basis is not None else 0.0
+        state_basis = aggregate_cost_basis(lots)
+        if yaml_basis > 0 and state_basis > 0 and not math.isclose(yaml_basis, state_basis, rel_tol=0.01):
+            logger.warning(
+                "cost_basis drift: portfolio.yaml has %s=$%.4f but state weighted-avg is $%.4f; trusting state",
+                ticker,
+                yaml_basis,
+                state_basis,
+            )
     # Tolerate IEEE-754 round-trip noise that accumulates over many ticks; only
     # warn on drift that exceeds half a cent.
     if not math.isclose(portfolio.available_cash, state.available_cash, abs_tol=0.005):
@@ -328,6 +365,11 @@ def apply_sell(state: LiveState, ticker: str, shares: float, price: float, day: 
     state.available_cash += shares * price
     if not lots:
         state.lots.pop(ticker, None)
+        # Full exit also clears the per-ticker HWM so a future re-entry starts
+        # fresh against the new entry price, not a stale months-old peak.
+        # Mirrors backtest's ``state.high_water_marks.pop(ticker, None)`` on
+        # ``new_position == 0``.
+        state.high_water_marks.pop(ticker, None)
     st_pnl = breakdown.st_shares * price - breakdown.st_weighted
     lt_pnl = breakdown.lt_shares * price - breakdown.lt_weighted
     return st_pnl, lt_pnl

@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import errno
+import fcntl
 import logging
+import os
 import time
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -41,6 +44,28 @@ class LiveEngine:
         history_days: int | None = None,
     ) -> None:
         self._state_path = state_path
+        # Take an exclusive non-blocking advisory lock on a sidecar lockfile
+        # before touching the state. Two ``midas live`` processes against the
+        # same state file would otherwise both load, both compute, both write
+        # — ``os.replace`` picks a winner and the loser's fills are lost
+        # silently. This converts that silent corruption into a loud error.
+        # The lock is held for the lifetime of the process; flock releases on
+        # fd close, which Python handles automatically at interpreter exit.
+        self._lock_path = state_path.with_suffix(state_path.suffix + ".lock")
+        self._lock_path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock_fd: int | None = os.open(str(self._lock_path), os.O_WRONLY | os.O_CREAT, 0o644)
+        try:
+            fcntl.flock(self._lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            os.close(self._lock_fd)
+            self._lock_fd = None
+            if exc.errno in (errno.EAGAIN, errno.EWOULDBLOCK):
+                msg = (
+                    f"another midas live process appears to hold the state lock at {self._lock_path}; "
+                    f"refusing to start. If you're sure no other process is running, remove the lock file."
+                )
+                raise RuntimeError(msg) from exc
+            raise
         self._state: LiveState = load_or_seed(portfolio, state_path)
         self._portfolio = portfolio
         self._allocator = allocator
@@ -65,6 +90,30 @@ class LiveEngine:
             self._restriction_tracker = RestrictionTracker(
                 portfolio.trading_restrictions,
             )
+
+    def close(self) -> None:
+        """Release the state lockfile.
+
+        In production the engine lives for the lifetime of the process and
+        the lock is released implicitly at interpreter exit when the file
+        descriptor is closed. Tests that construct multiple ``LiveEngine``s
+        against the same state file (e.g. the backtest/live parity suite)
+        must call this between instances or the second construction will
+        race the first's GC and fail with ``RuntimeError`` on the
+        ``LOCK_EX | LOCK_NB`` acquire. Idempotent.
+        """
+        if self._lock_fd is not None:
+            try:
+                fcntl.flock(self._lock_fd, fcntl.LOCK_UN)
+            finally:
+                os.close(self._lock_fd)
+                self._lock_fd = None
+
+    def __enter__(self) -> LiveEngine:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.close()
 
     def run(self) -> None:
         tickers = [holding.ticker for holding in self._portfolio.holdings]
@@ -122,7 +171,14 @@ class LiveEngine:
         active_tickers = [ticker for ticker in tickers if ticker in price_data]
 
         # Advance per-ticker HWM in state to the latest close (never regress).
+        # Only held tickers count: HWM on a not-yet-bought ticker would seed
+        # ``TrailingStop`` against a pre-purchase peak on the very first held
+        # day, silently more conservative than backtest, which only tracks
+        # HWM on positions with shares > 0.
+        held_tickers = {ticker for ticker, lots in self._state.lots.items() if sum(lot.shares for lot in lots) > 0}
         for ticker in active_tickers:
+            if ticker not in held_tickers:
+                continue
             close = current_prices[ticker]
             self._state.high_water_marks[ticker] = max(self._state.high_water_marks.get(ticker, close), close)
 
@@ -157,10 +213,17 @@ class LiveEngine:
             }
 
         # Phase 1: Allocator scores entry signals and blends to target weights.
+        # ``current_drawdown`` feeds the optional CPPI overlay (Phase 4a).
+        # ``peak_equity`` is now persistent across runs via the state
+        # sidecar — without this argument the overlay would always be a
+        # no-op in live (its raison d'être for this PR).
+        peak = self._state.peak_equity
+        current_drawdown = (peak - total_value) / peak if peak is not None and peak > 0 and total_value < peak else 0.0
         allocation = self._allocator.allocate(
             active_tickers,
             price_history,
             current_weights=current_weights,
+            current_drawdown=current_drawdown,
         )
 
         # Phase 2: Exit rules clamp proposed targets downward (LEAN pattern).

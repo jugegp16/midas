@@ -171,6 +171,49 @@ def test_load_or_seed_warns_on_cash_drift(tmp_path: Path, caplog: pytest.LogCapt
     assert any("available_cash" in record.message for record in caplog.records)
 
 
+def test_load_or_seed_warns_on_cost_basis_drift(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    """Hand-edits to portfolio.yaml's cost_basis are the field most likely to
+    surprise the operator (it's exactly what TrailingStop/StopLoss clamp
+    against). Surface it as a warning; state still wins per the documented
+    "runtime fills are authoritative" policy.
+    """
+    portfolio = PortfolioConfig(
+        holdings=[Holding(ticker="AAPL", shares=100.0, cost_basis=150.0)],
+        available_cash=1000.0,
+    )
+    path = tmp_path / "state.yaml"
+    load_or_seed(portfolio, path)
+
+    portfolio_drifted = PortfolioConfig(
+        holdings=[Holding(ticker="AAPL", shares=100.0, cost_basis=200.0)],  # 33% bump
+        available_cash=1000.0,
+    )
+    with caplog.at_level("WARNING"):
+        state = load_or_seed(portfolio_drifted, path)
+    assert state.lots["AAPL"][0].cost_basis == 150.0  # state file wins
+    assert any("cost_basis" in record.message for record in caplog.records)
+
+
+def test_load_or_seed_does_not_warn_on_cost_basis_within_tolerance(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Sub-1% drift (e.g., 150.0 vs 150.5) is within tolerance — no warning."""
+    portfolio = PortfolioConfig(
+        holdings=[Holding(ticker="AAPL", shares=100.0, cost_basis=150.0)],
+        available_cash=1000.0,
+    )
+    path = tmp_path / "state.yaml"
+    load_or_seed(portfolio, path)
+
+    portfolio_close = PortfolioConfig(
+        holdings=[Holding(ticker="AAPL", shares=100.0, cost_basis=150.5)],  # ~0.33% drift
+        available_cash=1000.0,
+    )
+    with caplog.at_level("WARNING"):
+        load_or_seed(portfolio_close, path)
+    assert not any("cost_basis" in record.message for record in caplog.records)
+
+
 def test_load_or_seed_raises_when_held_ticker_removed_from_portfolio(tmp_path: Path) -> None:
     portfolio = PortfolioConfig(
         holdings=[Holding(ticker="AAPL", shares=100.0, cost_basis=150.0)],

@@ -48,6 +48,7 @@ from midas.models import (
 )
 from midas.order_sizer import OrderSizer
 from midas.results import BacktestResult
+from midas.strategies.stop_loss import StopLoss
 
 
 def _build_price_frame(start: date, n_bars: int, seed: int = 42) -> pd.DataFrame:
@@ -224,7 +225,13 @@ def test_no_action_state_evolution_matches_backtest(
             state_path=state_path,
             history_days=n_bars * 2,
         )
-        live_engine._tick([ticker])
+        try:
+            live_engine._tick([ticker])
+        finally:
+            # Release the state lockfile so the next loop iteration's engine
+            # can reacquire it. In production a single engine lives for the
+            # whole process; this teardown is test-only.
+            live_engine.close()
 
     final_live = load_state(state_path)
 
@@ -282,4 +289,131 @@ def test_no_action_state_evolution_matches_backtest(
     )
     assert bt_summary["cash"] == pytest.approx(live_summary["cash"]), (
         f"cash diverges: backtest.cash={bt_summary['cash']}, live.available_cash={live_summary['cash']}"
+    )
+
+
+def _build_drop_price_frame(start: date, n_bars: int, drop_at: int, drop_pct: float) -> pd.DataFrame:
+    """Flat-then-drop OHLCV frame: ``drop_pct`` decline at bar ``drop_at``.
+
+    Deterministic — no randomness — so the test asserts exact equivalence
+    rather than tolerance windows.
+    """
+    closes = np.full(n_bars, 100.0)
+    closes[drop_at:] = 100.0 * (1.0 - drop_pct)
+    dates: list[date] = []
+    current = start
+    while len(dates) < n_bars:
+        if current.weekday() < 5:
+            dates.append(current)
+        current += timedelta(days=1)
+    return pd.DataFrame(
+        {
+            "open": closes,
+            "high": closes,
+            "low": closes,
+            "close": closes,
+            "volume": np.full(n_bars, 1_000_000.0),
+        },
+        index=dates,
+    )
+
+
+def test_stoploss_sell_state_evolution_matches_backtest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Both engines execute the same StopLoss sell and end with matching state.
+
+    Drives a price drop large enough to trigger ``StopLoss(loss_threshold=0.10)``
+    on a held position. Asserts the resulting lot list (empty after full exit),
+    cash (credited with sale proceeds), HWM (cleared on full exit), and peak
+    equity all match between backtest and live. The earlier no-action parity
+    test only exercises HWM/peak ratchets; this one exercises the order
+    sizer, FIFO consumption, and the on-exit cleanup invariants — the actual
+    plumbing that makes the two engines comparable in real use.
+    """
+    ticker = "AAPL"
+    shares = 10.0
+    cash = 0.0
+    n_bars = 20
+    drop_at = 5
+    start = date(2026, 1, 5)
+    prices = _build_drop_price_frame(start, n_bars, drop_at, drop_pct=0.20)
+    seed_day = prices.index[0]
+    seed_close = float(prices["close"].iloc[0])
+
+    portfolio = PortfolioConfig(
+        holdings=[Holding(ticker=ticker, shares=shares, cost_basis=seed_close)],
+        available_cash=cash,
+    )
+    constraints = AllocationConstraints()
+
+    # ---- Backtest --------------------------------------------------------
+    bt_engine = _CapturingBacktestEngine(
+        allocator=Allocator(entries=[], constraints=constraints, n_tickers=1),
+        order_sizer=OrderSizer(),
+        exit_rules=[StopLoss(loss_threshold=0.10)],
+        constraints=constraints,
+        enable_split=False,
+        execution_mode="close",  # Avoid next-day fill lag for cleaner parity.
+    )
+    bt_engine.run(portfolio, {ticker: prices}, prices.index[0], prices.index[-1])
+    bt_state = bt_engine.captured_state
+    assert bt_state is not None
+    assert bt_state.positions.get(ticker, 0) == 0, "backtest should fully exit on StopLoss"
+
+    # ---- Live ------------------------------------------------------------
+    state_path = tmp_path / "state.yaml"
+    _seed_state_to_match_backtest(
+        state_path=state_path,
+        ticker=ticker,
+        shares=shares,
+        seed_close=seed_close,
+        seed_day=seed_day,
+        cash=cash,
+    )
+
+    for current_day in prices.index:
+        provider = _make_provider_for_window(prices, ticker, current_day)
+
+        class FakeDate:
+            value: date = current_day
+
+            @staticmethod
+            def today() -> date:
+                return FakeDate.value
+
+        monkeypatch.setattr("midas.live.date", FakeDate)
+
+        live_engine = LiveEngine(
+            portfolio=portfolio,
+            allocator=Allocator(entries=[], constraints=constraints, n_tickers=1),
+            order_sizer=OrderSizer(),
+            provider=provider,
+            state_path=state_path,
+            exit_rules=[StopLoss(loss_threshold=0.10)],
+            constraints=constraints,
+            history_days=n_bars * 2,
+        )
+        try:
+            live_engine._tick([ticker])
+        finally:
+            live_engine.close()
+
+    final_live = load_state(state_path)
+
+    # ---- Compare ---------------------------------------------------------
+    assert ticker not in final_live.lots, "live should empty lots after full exit"
+    # HWM clear-on-exit invariant: backtest pops state.high_water_marks on
+    # full exit at backtest.py:_execute. Live now does the same in
+    # apply_sell — this asserts the symmetry.
+    assert ticker not in final_live.high_water_marks, (
+        "live should clear HWM on full exit (regression for the C2 leak the reviewer flagged)"
+    )
+    assert bt_state.cash == pytest.approx(final_live.available_cash), (
+        f"cash diverges after StopLoss sell: backtest={bt_state.cash}, live={final_live.available_cash}"
+    )
+    # Peak must match — both engines saw the same equity trajectory.
+    assert bt_state.peak_value == pytest.approx(final_live.peak_equity), (
+        f"peak diverges: backtest.peak_value={bt_state.peak_value}, live.peak_equity={final_live.peak_equity}"
     )
