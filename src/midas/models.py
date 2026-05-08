@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from enum import Enum
+from pathlib import Path
 
 DEFAULT_MIN_CASH_PCT = 0.05
 DEFAULT_MIN_BUY_DELTA = 0.02
@@ -72,6 +73,7 @@ class PortfolioConfig:
     available_cash: float
     cash_infusion: CashInfusion | None = None
     trading_restrictions: TradingRestrictions | None = None
+    state_file: Path | None = None
 
     def __post_init__(self) -> None:
         self._by_ticker = {holding.ticker: holding for holding in self.holdings}

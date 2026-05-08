@@ -76,6 +76,27 @@ def test_load_portfolio_minimal(tmp_path: Path) -> None:
     assert port.available_cash == 1000.0
 
 
+def test_load_portfolio_parses_state_file_field(tmp_path: Path) -> None:
+    yaml_path = tmp_path / "portfolio.yaml"
+    yaml_path.write_text(
+        "state_file: ./run/portfolio.state.yaml\n"
+        "portfolio:\n"
+        "  - ticker: AAPL\n"
+        "    shares: 100\n"
+        "    cost_basis: 150\n"
+        "available_cash: 1000\n"
+    )
+    portfolio = load_portfolio(yaml_path)
+    assert portfolio.state_file == Path("./run/portfolio.state.yaml")
+
+
+def test_load_portfolio_state_file_field_optional(tmp_path: Path) -> None:
+    yaml_path = tmp_path / "portfolio.yaml"
+    yaml_path.write_text("portfolio:\n  - ticker: AAPL\n    shares: 100\n    cost_basis: 150\navailable_cash: 1000\n")
+    portfolio = load_portfolio(yaml_path)
+    assert portfolio.state_file is None
+
+
 def test_load_strategies(strategy_yaml: Path) -> None:
     configs, constraints, _risk = load_strategies(strategy_yaml)
     assert len(configs) == 3
