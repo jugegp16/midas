@@ -222,7 +222,9 @@ def live(
     """Run live analysis with real-time price polling."""
     from midas.live import LiveEngine
 
-    port = load_portfolio(Path(portfolio))
+    portfolio_path = Path(portfolio)
+    port = load_portfolio(portfolio_path)
+    state_path = port.state_file if port.state_file is not None else portfolio_path.with_suffix(".state.yaml")
     strat_configs, constraints, risk_config = (
         load_strategies(Path(strategies)) if strategies else (None, AllocationConstraints(), RiskConfig())
     )
@@ -236,17 +238,18 @@ def live(
         risk_config=risk_config,
     )
 
-    engine = LiveEngine(
+    with LiveEngine(
         portfolio=port,
         allocator=allocator,
         order_sizer=order_sizer,
         provider=provider,
+        state_path=state_path,
         exit_rules=exit_rules,
         constraints=constraints,
         poll_interval=interval,
         dry_run=dry_run,
-    )
-    engine.run()
+    ) as engine:
+        engine.run()
 
 
 @cli.command()

@@ -200,9 +200,17 @@ After optimizing and backtesting, live mode puts the strategy to work on real-ti
 
 The live engine polls real-time prices on a configurable interval (default 60 seconds) and emits order alerts for manual execution. On each tick, it fetches the last 120 days of price history, runs the full allocation and exit-rule pipeline, and compares the resulting order set to the previous tick. If nothing changed, it stays quiet. If new orders appear or existing ones change, it emits an alert with the ticker, price, reason, source strategy, and suggested share count.
 
-The live engine is fully stateless -- it reads current holdings from the portfolio config each tick and re-derives everything from scratch. Exit rules see the `cost_basis` from the portfolio YAML and a high-water mark derived as `max(cost_basis, current_price)`. This is a synthetic HWM, not a tracked peak: it equals `current_price` whenever the position is in profit and `cost_basis` otherwise. As a consequence, **`TrailingStop` is effectively inert in live mode** — its drawdown-from-HWM check collapses to 0 when in profit and fails the in-profit gate when underwater. `LiveEngine` logs a warning at startup if `TrailingStop` is configured; remove it from live configs, or rely on `StopLoss` / `ProfitTaking` until per-lot HWM persistence is implemented. The live engine does not execute trades; it's designed for operators who execute manually through their broker.
+The live engine carries persistent runtime state across ticks and runs via a YAML sidecar (see [Live State Persistence](#live-state-persistence) below). Exit rules see a share-weighted cost basis from the live lot list and a per-ticker high-water mark tracked as the running peak of price observed since seed. This matches backtest semantics: `TrailingStop` fires on real drawdown from a tracked peak, the CPPI overlay scales budget against tracked peak equity, and FIFO sell consumption preserves short-term/long-term holding-period classification. The live engine does not execute trades; it's designed for operators who execute manually through their broker, and it assumes every emitted alert is filled at the alert price when it updates state.
 
 See [CLI Reference](cli.md#live) for all live options.
+
+### Live State Persistence
+
+The live engine persists runtime state to a YAML sidecar (`<portfolio>.state.yaml` by default, alongside `portfolio.yaml`, or the path under the optional top-level `state_file:` field in `portfolio.yaml`). The schema is owned by `src/midas/live_state.py` and documented in [the design spec](specs/2026-05-07-live-per-lot-tracking-design.md).
+
+After first seed, `portfolio.yaml` is read-only seed config. The state file owns positions (per-lot), available cash, per-ticker high-water marks, peak equity, and the cash-infusion `next_date`. Edits to `portfolio.yaml`'s aggregate `shares`, `cost_basis`, or `available_cash` after seed have no effect; the engine warns on drift but trusts the state file.
+
+The engine writes the state file atomically (tempfile + `os.replace`) at the end of every tick, on the assumption that emitted alerts are filled at the alert price. Operators who need to reflect slippage or manual overrides can hand-edit the state file — it is plain YAML.
 
 ## Lot Tracking
 

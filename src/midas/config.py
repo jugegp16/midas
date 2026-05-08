@@ -66,11 +66,15 @@ def load_portfolio(path: Path) -> PortfolioConfig:
             round_trip_days=int(tr.get("round_trip_days", 0)),
         )
 
+    state_file_raw = raw.get("state_file")
+    state_file = Path(state_file_raw) if state_file_raw is not None else None
+
     portfolio = PortfolioConfig(
         holdings=holdings,
         available_cash=float(raw["available_cash"]),
         cash_infusion=infusion,
         trading_restrictions=restrictions,
+        state_file=state_file,
     )
 
     return portfolio

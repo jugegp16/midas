@@ -13,6 +13,7 @@ import pandas as pd
 
 from midas.allocator import AllocationResult, Allocator, AllocatorRiskTelemetry
 from midas.data.price_history import PriceHistory
+from midas.live_state import aggregate_cost_basis, consume_lots_fifo
 from midas.metrics import (
     compute_annualized_return,
     compute_cagr,
@@ -740,7 +741,7 @@ class BacktestEngine:
                 proposed = clamped_targets.get(ticker, 0.0)
                 if proposed <= 0:
                     continue
-                cost_basis = self._aggregate_cost_basis(state.lots.get(ticker, []))
+                cost_basis = aggregate_cost_basis(state.lots.get(ticker, []))
                 hwm = state.high_water_marks.get(ticker, 0.0)
                 clamped = rule.clamp_target(
                     ticker,
@@ -882,14 +883,6 @@ class BacktestEngine:
             state.cash -= order.estimated_value
 
     @staticmethod
-    def _aggregate_cost_basis(lots: list[PositionLot]) -> float:
-        """Share-weighted average cost basis across all open lots."""
-        total_shares = sum(lot.shares for lot in lots)
-        if total_shares <= 0:
-            return 0.0
-        return sum(lot.shares * lot.cost_basis for lot in lots) / total_shares
-
-    @staticmethod
     def _fifo_consumed_basis(lots: list[PositionLot], shares: float) -> float:
         """Share-weighted cost basis of the first *shares* shares in FIFO order.
 
@@ -954,32 +947,11 @@ class BacktestEngine:
         if not lots:
             return []
 
-        st_shares = 0.0
-        st_weighted_basis = 0.0
-        lt_shares = 0.0
-        lt_weighted_basis = 0.0
-
-        remaining = order.shares
-        while remaining > 0 and lots:
-            lot = lots[0]
-            take = min(lot.shares, remaining)
-            if lot.purchase_date is not None and (day - lot.purchase_date).days >= 365:
-                lt_shares += take
-                lt_weighted_basis += take * lot.cost_basis
-            else:
-                st_shares += take
-                st_weighted_basis += take * lot.cost_basis
-
-            if lot.shares <= remaining:
-                remaining -= lot.shares
-                lots.pop(0)
-            else:
-                lots[0] = PositionLot(
-                    shares=lot.shares - remaining,
-                    purchase_date=lot.purchase_date,
-                    cost_basis=lot.cost_basis,
-                )
-                remaining = 0
+        breakdown = consume_lots_fifo(lots, order.shares, day)
+        st_shares = breakdown.st_shares
+        st_weighted_basis = breakdown.st_weighted
+        lt_shares = breakdown.lt_shares
+        lt_weighted_basis = breakdown.lt_weighted
 
         new_position = state.positions.get(ticker, 0) - order.shares
         # ``size_sells`` caps at held shares, so reaching _execute with a
