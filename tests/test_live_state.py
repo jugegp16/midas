@@ -7,7 +7,15 @@ from pathlib import Path
 
 import pytest
 
-from midas.live_state import LiveState, StateFileError, load_or_seed, load_state, save_atomic
+from midas.live_state import (
+    LiveState,
+    StateFileError,
+    aggregate_cost_basis,
+    consume_lots_fifo,
+    load_or_seed,
+    load_state,
+    save_atomic,
+)
 from midas.models import CashInfusion, Holding, PortfolioConfig, PositionLot
 
 
@@ -157,3 +165,49 @@ def test_load_or_seed_raises_when_held_ticker_removed_from_portfolio(tmp_path: P
     )
     with pytest.raises(StateFileError, match=r"AAPL.*100"):
         load_or_seed(portfolio_without, path)
+
+
+def test_aggregate_cost_basis_share_weighted() -> None:
+    lots = [
+        PositionLot(shares=100.0, purchase_date=None, cost_basis=10.0),
+        PositionLot(shares=50.0, purchase_date=date(2026, 4, 12), cost_basis=22.0),
+    ]
+    # (100 * 10 + 50 * 22) / 150 = 14.0
+    assert aggregate_cost_basis(lots) == pytest.approx(14.0)
+
+
+def test_aggregate_cost_basis_empty_returns_zero() -> None:
+    assert aggregate_cost_basis([]) == 0.0
+
+
+def test_consume_lots_fifo_st_only() -> None:
+    today = date(2026, 5, 7)
+    lots = [PositionLot(shares=100.0, purchase_date=date(2026, 4, 1), cost_basis=10.0)]
+    breakdown = consume_lots_fifo(lots, shares=40.0, day=today)
+    assert breakdown.st_shares == 40.0
+    assert breakdown.st_basis == pytest.approx(10.0)
+    assert breakdown.lt_shares == 0.0
+    assert lots[0].shares == 60.0  # mutated in place
+
+
+def test_consume_lots_fifo_straddles_st_lt_boundary() -> None:
+    today = date(2026, 5, 7)
+    # First lot is >365 days old (LT); second is recent (ST).
+    lots = [
+        PositionLot(shares=30.0, purchase_date=date(2025, 4, 1), cost_basis=10.0),
+        PositionLot(shares=20.0, purchase_date=date(2026, 4, 1), cost_basis=20.0),
+    ]
+    breakdown = consume_lots_fifo(lots, shares=40.0, day=today)
+    assert breakdown.lt_shares == 30.0
+    assert breakdown.lt_basis == pytest.approx(10.0)
+    assert breakdown.st_shares == 10.0
+    assert breakdown.st_basis == pytest.approx(20.0)
+    assert lots == [PositionLot(shares=10.0, purchase_date=date(2026, 4, 1), cost_basis=20.0)]
+
+
+def test_consume_lots_fifo_unknown_purchase_date_is_short_term() -> None:
+    today = date(2026, 5, 7)
+    lots = [PositionLot(shares=100.0, purchase_date=None, cost_basis=10.0)]
+    breakdown = consume_lots_fifo(lots, shares=50.0, day=today)
+    assert breakdown.st_shares == 50.0
+    assert breakdown.lt_shares == 0.0

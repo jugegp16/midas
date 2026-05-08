@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 import os
 import tempfile
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -201,3 +202,69 @@ def _check_for_drift(state: LiveState, portfolio: PortfolioConfig) -> None:
             portfolio.available_cash,
             state.available_cash,
         )
+
+
+@dataclass(frozen=True)
+class SellBreakdown:
+    """Result of consuming lots FIFO for a sell.
+
+    Each pair (shares, share-weighted basis) is reported separately for the
+    short-term (held <365 days, or unknown purchase date) and long-term
+    (held >=365 days) buckets. Either bucket can be zero.
+    """
+
+    st_shares: float
+    st_basis: float
+    lt_shares: float
+    lt_basis: float
+
+
+def aggregate_cost_basis(lots: Sequence[PositionLot]) -> float:
+    """Share-weighted average cost basis across all open lots, or 0.0 if empty."""
+    total_shares = sum(lot.shares for lot in lots)
+    if total_shares <= 0:
+        return 0.0
+    return sum(lot.shares * lot.cost_basis for lot in lots) / total_shares
+
+
+def consume_lots_fifo(lots: list[PositionLot], shares: float, day: date) -> SellBreakdown:
+    """Consume *shares* from *lots* in FIFO order, mutating in place.
+
+    Lots whose ``purchase_date`` is at least 365 days before *day* contribute
+    to the long-term bucket; everything else (including ``purchase_date=None``)
+    goes to the short-term bucket. Each bucket reports a share-weighted
+    cost basis over the consumed slices.
+    """
+    if shares <= 0 or not lots:
+        return SellBreakdown(0.0, 0.0, 0.0, 0.0)
+
+    st_shares = 0.0
+    st_weighted = 0.0
+    lt_shares = 0.0
+    lt_weighted = 0.0
+    remaining = shares
+    while remaining > 0 and lots:
+        lot = lots[0]
+        take = min(lot.shares, remaining)
+        is_long_term = lot.purchase_date is not None and (day - lot.purchase_date).days >= 365
+        if is_long_term:
+            lt_shares += take
+            lt_weighted += take * lot.cost_basis
+        else:
+            st_shares += take
+            st_weighted += take * lot.cost_basis
+
+        if lot.shares <= remaining:
+            remaining -= lot.shares
+            lots.pop(0)
+        else:
+            lots[0] = PositionLot(
+                shares=lot.shares - remaining,
+                purchase_date=lot.purchase_date,
+                cost_basis=lot.cost_basis,
+            )
+            remaining = 0
+
+    st_basis = st_weighted / st_shares if st_shares > 0 else 0.0
+    lt_basis = lt_weighted / lt_shares if lt_shares > 0 else 0.0
+    return SellBreakdown(st_shares=st_shares, st_basis=st_basis, lt_shares=lt_shares, lt_basis=lt_basis)
