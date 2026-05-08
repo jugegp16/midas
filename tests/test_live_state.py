@@ -444,3 +444,20 @@ def test_consume_lots_fifo_records_none_purchase_date_in_st_bucket() -> None:
     breakdown = consume_lots_fifo(lots, shares=10.0, day=date(2026, 5, 8))
     assert breakdown.st_purchase_dates == (None,)
     assert breakdown.lt_purchase_dates == ()
+
+
+def test_consume_lots_fifo_partial_lot_records_date_once() -> None:
+    """A partially-consumed lot's purchase_date appears exactly once in the tuple,
+    not duplicated across the slice and the residual. Guards against append-in-the-
+    wrong-branch bugs in the lot-shrinking conditional."""
+    from midas.live_state import consume_lots_fifo
+
+    lots = [
+        PositionLot(shares=10.0, purchase_date=date(2024, 1, 1), cost_basis=10.0),  # LT
+        PositionLot(shares=10.0, purchase_date=date(2024, 6, 1), cost_basis=12.0),  # LT
+    ]
+    # Consume 15 → first lot fully (10 shares), second lot partially (5 of 10).
+    breakdown = consume_lots_fifo(lots, shares=15.0, day=date(2026, 5, 8))
+    assert breakdown.lt_purchase_dates == (date(2024, 1, 1), date(2024, 6, 1))
+    # Residual 5 shares of the second lot remain in `lots` — sanity check for the loop.
+    assert lots == [PositionLot(shares=5.0, purchase_date=date(2024, 6, 1), cost_basis=12.0)]
