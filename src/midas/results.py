@@ -94,12 +94,20 @@ def _write_trades_csv(result: BacktestResult, path: Path) -> None:
                 "price",
                 "strategy",
                 "holding_period",
+                "purchase_date",
                 "cost_basis",
                 "realized_pnl",
                 "return_pct",
             ]
         )
         for trade in result.trades:
+            purchase_cell: str
+            if trade.purchase_date is None:
+                purchase_cell = ""
+            elif isinstance(trade.purchase_date, str):
+                purchase_cell = trade.purchase_date
+            else:
+                purchase_cell = trade.purchase_date.isoformat()
             common = [
                 trade.date.isoformat(),
                 trade.ticker,
@@ -108,6 +116,7 @@ def _write_trades_csv(result: BacktestResult, path: Path) -> None:
                 trade.price,
                 trade.strategy_name,
                 trade.holding_period.value if trade.holding_period else "",
+                purchase_cell,
             ]
             if trade.direction == Direction.SELL:
                 basis = sell_basis.get(id(trade), trade.price)

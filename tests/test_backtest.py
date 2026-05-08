@@ -468,6 +468,7 @@ def test_backtest_results_output(tmp_path: Path) -> None:
         "price",
         "strategy",
         "holding_period",
+        "purchase_date",
         "cost_basis",
         "realized_pnl",
         "return_pct",
@@ -1627,3 +1628,77 @@ def test_execute_sell_single_unseeded_lot_records_none() -> None:
     records = engine._execute(order, date(2026, 5, 8), state)
     trade, _basis = records[0]
     assert trade.purchase_date is None
+
+
+def _make_minimal_result(
+    trades: list[TradeRecord],
+    basis_per_sell: list[float],
+) -> BacktestResult:
+    """Build a minimal ``BacktestResult`` for output-writer tests."""
+    return BacktestResult(
+        trades=trades,
+        final_value=0,
+        starting_value=0,
+        buy_and_hold_value=0,
+        train_trades=[],
+        test_trades=[],
+        train_return=0,
+        test_return=0,
+        train_bh_return=0,
+        test_bh_return=0,
+        split_date=None,
+        twr=0,
+        equity_curve=[],
+        total_days=0,
+        train_days=0,
+        test_days=0,
+        cagr=0,
+        max_drawdown=0,
+        sharpe_ratio=0,
+        sortino_ratio=0,
+        win_rate=0,
+        profit_factor=0,
+        avg_win=0,
+        avg_loss=0,
+        efficiency_ratio=0,
+        strategy_stats=[],
+        unrealized_pnl=0,
+        unrealized_pnl_by_ticker={},
+        basis_per_sell=basis_per_sell,
+    )
+
+
+def test_trades_csv_includes_purchase_date_column(tmp_path: Path) -> None:
+    """Backtest output's trades.csv has a purchase_date column populated for BUYs and SELLs."""
+    import csv
+
+    from midas.results import _write_trades_csv
+
+    trades = [
+        TradeRecord(
+            date=date(2026, 1, 5),
+            ticker="AAPL",
+            direction=Direction.BUY,
+            shares=10.0,
+            price=20.0,
+            strategy_name="Momentum",
+            purchase_date=date(2026, 1, 5),
+        ),
+        TradeRecord(
+            date=date(2026, 4, 1),
+            ticker="AAPL",
+            direction=Direction.SELL,
+            shares=10.0,
+            price=25.0,
+            strategy_name="StopLoss",
+            holding_period=HoldingPeriod.SHORT_TERM,
+            purchase_date=date(2026, 1, 5),
+        ),
+    ]
+    result = _make_minimal_result(trades=trades, basis_per_sell=[20.0])
+    out = tmp_path / "trades.csv"
+    _write_trades_csv(result, out)
+    rows = list(csv.DictReader(out.open()))
+    assert "purchase_date" in rows[0]
+    assert rows[0]["purchase_date"] == "2026-01-05"
+    assert rows[1]["purchase_date"] == "2026-01-05"
