@@ -1,0 +1,71 @@
+"""Integration tests for LiveEngine driving LiveState across ticks."""
+
+from __future__ import annotations
+
+from datetime import date
+from pathlib import Path
+from unittest.mock import MagicMock
+
+import pandas as pd
+import pytest
+
+from midas.allocator import Allocator
+from midas.live import LiveEngine
+from midas.live_state import load_state
+from midas.models import (
+    AllocationConstraints,
+    Holding,
+    PortfolioConfig,
+)
+from midas.order_sizer import OrderSizer
+
+
+def _make_provider(prices: dict[str, list[float]], dates: list[date]) -> MagicMock:
+    """Build a fake DataProvider returning an OHLCV frame for each ticker."""
+    provider = MagicMock()
+
+    def get_history(ticker: str, start: date, end: date) -> pd.DataFrame:
+        closes = prices[ticker]
+        return pd.DataFrame(
+            {
+                "open": closes,
+                "high": closes,
+                "low": closes,
+                "close": closes,
+                "volume": [1000.0] * len(closes),
+            },
+            index=pd.DatetimeIndex([pd.Timestamp(d) for d in dates]),
+        )
+
+    provider.get_history.side_effect = get_history
+    return provider
+
+
+@pytest.fixture
+def basic_portfolio() -> PortfolioConfig:
+    return PortfolioConfig(
+        holdings=[Holding(ticker="AAPL", shares=10.0, cost_basis=150.0)],
+        available_cash=1000.0,
+    )
+
+
+def test_live_engine_seeds_state_on_first_construction(basic_portfolio: PortfolioConfig, tmp_path: Path) -> None:
+    state_path = tmp_path / "portfolio.state.yaml"
+    assert not state_path.exists()
+
+    allocator = Allocator(entries=[], constraints=AllocationConstraints(), n_tickers=1)
+    sizer = OrderSizer()
+    provider = _make_provider({"AAPL": [150.0]}, [date(2026, 5, 7)])
+
+    LiveEngine(
+        portfolio=basic_portfolio,
+        allocator=allocator,
+        order_sizer=sizer,
+        provider=provider,
+        state_path=state_path,
+    )
+
+    assert state_path.exists()
+    state = load_state(state_path)
+    assert state.available_cash == 1000.0
+    assert "AAPL" in state.lots

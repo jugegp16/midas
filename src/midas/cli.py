@@ -236,7 +236,8 @@ def live(
         risk_config=risk_config,
     )
 
-    engine = LiveEngine(
+    # TODO(task-10): pass state_path resolved from portfolio.state_file or default.
+    engine = LiveEngine(  # type: ignore[call-arg]
         portfolio=port,
         allocator=allocator,
         order_sizer=order_sizer,

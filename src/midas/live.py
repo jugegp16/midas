@@ -5,12 +5,14 @@ from __future__ import annotations
 import logging
 import time
 from datetime import UTC, date, datetime, timedelta
+from pathlib import Path
 
 import pandas as pd
 
 from midas.allocator import AllocationResult, Allocator
 from midas.data.price_history import PriceHistory
 from midas.data.provider import DataProvider
+from midas.live_state import LiveState, load_or_seed
 from midas.models import (
     AllocationConstraints,
     Direction,
@@ -20,7 +22,6 @@ from midas.order_sizer import OrderSizer
 from midas.output import print_alert, print_status
 from midas.restrictions import RestrictionTracker
 from midas.strategies.base import ExitRule, max_warmup, warmup_bars_to_calendar_days
-from midas.strategies.trailing_stop import TrailingStop
 
 logger = logging.getLogger(__name__)
 
@@ -32,12 +33,15 @@ class LiveEngine:
         allocator: Allocator,
         order_sizer: OrderSizer,
         provider: DataProvider,
+        state_path: Path,
         exit_rules: list[ExitRule] | None = None,
         constraints: AllocationConstraints | None = None,
         poll_interval: int = 60,
         dry_run: bool = False,
         history_days: int | None = None,
     ) -> None:
+        self._state_path = state_path
+        self._state: LiveState = load_or_seed(portfolio, state_path)
         self._portfolio = portfolio
         self._allocator = allocator
         self._order_sizer = order_sizer
@@ -60,36 +64,6 @@ class LiveEngine:
         if portfolio.trading_restrictions:
             self._restriction_tracker = RestrictionTracker(
                 portfolio.trading_restrictions,
-            )
-
-        # Live mode does not persist per-lot state across runs, so the
-        # high-water mark passed to exit rules is derived as
-        # ``max(cost_basis, current_price)`` (see ``_tick``). Under that
-        # derivation, TrailingStop's drawdown-from-HWM check always
-        # collapses: it's 0 when in profit (current == hwm) and the
-        # in-profit gate fails when underwater. The rule never fires.
-        # Warn loudly so optimized strategies that rely on TrailingStop
-        # aren't silently neutered at deployment.
-        if any(isinstance(rule, TrailingStop) for rule in self._exit_rules):
-            logger.warning(
-                "TrailingStop is configured but live mode does not track a "
-                "real high-water mark — it will NOT fire. Optimized backtest "
-                "behavior will diverge from live. Remove TrailingStop from "
-                "your live config or wait for per-lot HWM persistence."
-            )
-
-        # CPPI overlay also depends on a persistent peak across runs. Live
-        # mode is stateless across ticks (re-derives from YAML each cycle),
-        # so the CPPI overlay is inert in live v1. Warn at startup so
-        # operators know backtests with drawdown_penalty configured will
-        # diverge from live behavior during drawdown periods.
-        risk_config = getattr(self._allocator, "risk_config", None)
-        if risk_config is not None and risk_config.drawdown_penalty is not None:
-            logger.warning(
-                "drawdown_penalty is configured but live mode does not yet "
-                "track a persistent peak across runs — the CPPI overlay is "
-                "inert in live and behavior will diverge from backtest. "
-                "Peak persistence is tracked for v2."
             )
 
     def run(self) -> None:
