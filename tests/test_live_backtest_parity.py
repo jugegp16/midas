@@ -6,7 +6,10 @@ peak equity, and available cash agree at the end of the run.
 
 The simplest version uses no strategies and no exit rules — both engines
 just track time, prices, and the seed position. This isolates the state-
-evolution mechanics from any strategy-driven order flow.
+evolution mechanics from any strategy-driven order flow. Note that with
+no order flow, lot-consumption parity (FIFO/LIFO accounting under sells)
+is not exercised end-to-end here — that requires the strategy-driven
+follow-up.
 
 Notes on alignment:
 
@@ -197,9 +200,13 @@ def test_no_action_state_evolution_matches_backtest(
     for current_day in prices.index:
         provider = _make_provider_for_window(prices, ticker, current_day)
 
-        # Bind ``current_day`` as a class attribute so a static ``today()`` returns
-        # the loop's current value (closing over the loop variable would trip
-        # ruff's B023 and also be functionally incorrect for late-bound lookups).
+        # Stub ``date.today()`` to return the current loop bar so live's
+        # ``_tick`` sees the same "today" the backtest's day-T decision is
+        # comparing against. We use a class attribute (not a closure over
+        # ``current_day``) to satisfy ruff's B023 check on loop-variable
+        # capture. The stub is intentionally narrow: it overrides only
+        # ``today()``, not the ``date`` constructor — ``_tick`` doesn't
+        # call other ``date`` factories.
         class FakeDate:
             value: date = current_day
 
@@ -222,14 +229,57 @@ def test_no_action_state_evolution_matches_backtest(
     final_live = load_state(state_path)
 
     # ---- Compare ---------------------------------------------------------
-    bt_lots = bt_state.lots[ticker]
-    live_lots = final_live.lots[ticker]
-    assert len(bt_lots) == len(live_lots)
-    for bt_lot, live_lot in zip(bt_lots, live_lots, strict=True):
-        assert bt_lot.shares == pytest.approx(live_lot.shares)
-        assert bt_lot.cost_basis == pytest.approx(live_lot.cost_basis)
-        assert bt_lot.purchase_date == live_lot.purchase_date
+    # Build comparable summaries from each engine's final state so any
+    # divergence is reported with the field, the ticker, and both values.
+    bt_summary = {
+        "lots": {
+            tk: [(lot.shares, lot.purchase_date, lot.cost_basis) for lot in lots] for tk, lots in bt_state.lots.items()
+        },
+        "hwm": dict(bt_state.high_water_marks),
+        "peak": bt_state.peak_value,
+        "cash": bt_state.cash,
+    }
+    live_summary = {
+        "lots": {
+            tk: [(lot.shares, lot.purchase_date, lot.cost_basis) for lot in lots]
+            for tk, lots in final_live.lots.items()
+        },
+        "hwm": dict(final_live.high_water_marks),
+        "peak": final_live.peak_equity,
+        "cash": final_live.available_cash,
+    }
 
-    assert bt_state.high_water_marks[ticker] == pytest.approx(final_live.high_water_marks[ticker])
-    assert bt_state.peak_value == pytest.approx(final_live.peak_equity)
-    assert bt_state.cash == pytest.approx(final_live.available_cash)
+    assert bt_summary["lots"].keys() == live_summary["lots"].keys(), (
+        f"lot tickers diverge: backtest={set(bt_summary['lots'])}, live={set(live_summary['lots'])}"
+    )
+    for tk in bt_summary["lots"]:
+        bt_lots = bt_summary["lots"][tk]
+        live_lots = live_summary["lots"][tk]
+        assert len(bt_lots) == len(live_lots), (
+            f"{tk}: lot count diverges: backtest={len(bt_lots)}, live={len(live_lots)}"
+        )
+        for idx, (bt_lot, live_lot) in enumerate(zip(bt_lots, live_lots, strict=True)):
+            assert bt_lot[0] == pytest.approx(live_lot[0]), (
+                f"{tk} lot {idx}: shares diverge: backtest={bt_lot[0]}, live={live_lot[0]}"
+            )
+            assert bt_lot[1] == live_lot[1], (
+                f"{tk} lot {idx}: purchase_date diverges: backtest={bt_lot[1]}, live={live_lot[1]}"
+            )
+            assert bt_lot[2] == pytest.approx(live_lot[2]), (
+                f"{tk} lot {idx}: cost_basis diverges: backtest={bt_lot[2]}, live={live_lot[2]}"
+            )
+
+    assert bt_summary["hwm"].keys() == live_summary["hwm"].keys(), (
+        f"HWM tickers diverge: backtest={set(bt_summary['hwm'])}, live={set(live_summary['hwm'])}"
+    )
+    for tk, bt_hwm in bt_summary["hwm"].items():
+        assert bt_hwm == pytest.approx(live_summary["hwm"][tk]), (
+            f"{tk}: HWM diverges: backtest={bt_hwm}, live={live_summary['hwm'][tk]}"
+        )
+
+    assert bt_summary["peak"] == pytest.approx(live_summary["peak"]), (
+        f"peak diverges: backtest.peak_value={bt_summary['peak']}, live.peak_equity={live_summary['peak']}"
+    )
+    assert bt_summary["cash"] == pytest.approx(live_summary["cash"]), (
+        f"cash diverges: backtest.cash={bt_summary['cash']}, live.available_cash={live_summary['cash']}"
+    )
