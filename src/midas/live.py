@@ -19,16 +19,28 @@ except ImportError:  # Windows
 from midas.allocator import AllocationResult, Allocator
 from midas.data.price_history import PriceHistory
 from midas.data.provider import DataProvider
-from midas.live_state import LiveState, aggregate_cost_basis, apply_buy, apply_sell, load_or_seed, save_atomic
+from midas.live_state import (
+    LiveState,
+    SellBreakdown,
+    aggregate_cost_basis,
+    apply_buy,
+    apply_sell,
+    load_or_seed,
+    resolve_purchase_date,
+    save_atomic,
+)
 from midas.models import (
     AllocationConstraints,
     Direction,
+    HoldingPeriod,
     PortfolioConfig,
+    TradeRecord,
 )
 from midas.order_sizer import OrderSizer
 from midas.output import print_alert, print_status
 from midas.restrictions import RestrictionTracker
 from midas.strategies.base import ExitRule, max_warmup, warmup_bars_to_calendar_days
+from midas.trade_log import append_trade
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +66,7 @@ class LiveEngine:
             )
             raise RuntimeError(msg)
         self._state_path = state_path
+        self._trade_log_path = state_path.with_suffix(state_path.suffix + ".trades.csv")
         # Take an exclusive non-blocking advisory lock on a sidecar lockfile
         # before touching the state. Two ``midas live`` processes against the
         # same state file would otherwise both load, both compute, both write
@@ -313,14 +326,19 @@ class LiveEngine:
         # running subtotal from state after fills would double-count.
         pre_fill_cash = self._state.available_cash
 
-        # Apply assumed fills to the in-memory state.
+        # Apply assumed fills to the in-memory state. Capture per-SELL breakdowns
+        # so the trade-log append below has shares/basis/dates per ST/LT bucket.
+        # Order is a frozen dataclass but contains an OrderContext with a dict
+        # field (contributions), making it unhashable. Use id(order) — safe
+        # because filtered is a stable list across both passes within _tick.
+        sell_breakdowns: dict[int, SellBreakdown] = {}
         for order in filtered:
             if order.shares <= 0:
                 continue
             if order.direction == Direction.BUY:
                 apply_buy(self._state, order.ticker, order.shares, order.price, today)
             else:
-                apply_sell(self._state, order.ticker, order.shares, order.price, today)
+                sell_breakdowns[id(order)] = apply_sell(self._state, order.ticker, order.shares, order.price, today)
             if self._restriction_tracker is not None:
                 self._restriction_tracker.record_trade(order.ticker, order.direction, today)
 
@@ -336,6 +354,67 @@ class LiveEngine:
         # Persist state at the end of the tick (HWM/peak/infusion always advance,
         # even on no-change ticks where alert printing is suppressed below).
         save_atomic(self._state, self._state_path)
+
+        # Append a row per BUY and per non-empty ST/LT SELL bucket to the trade log.
+        # Order matters: state is durable first; if the append fails, the operator
+        # sees the error and re-running re-attempts the append.
+        for order in filtered:
+            if order.shares <= 0:
+                continue
+            if order.direction == Direction.BUY:
+                buy_record = TradeRecord(
+                    date=today,
+                    ticker=order.ticker,
+                    direction=Direction.BUY,
+                    shares=order.shares,
+                    price=order.price,
+                    strategy_name=order.context.source,
+                    purchase_date=today,
+                )
+                append_trade(
+                    self._trade_log_path,
+                    buy_record,
+                    cost_basis=None,
+                    purchase_date=today,
+                )
+            else:
+                breakdown = sell_breakdowns[id(order)]
+                if breakdown.st_shares > 0:
+                    st_purchase = resolve_purchase_date(breakdown.st_purchase_dates)
+                    st_record = TradeRecord(
+                        date=today,
+                        ticker=order.ticker,
+                        direction=Direction.SELL,
+                        shares=breakdown.st_shares,
+                        price=order.price,
+                        strategy_name=order.context.source,
+                        holding_period=HoldingPeriod.SHORT_TERM,
+                        purchase_date=st_purchase,
+                    )
+                    append_trade(
+                        self._trade_log_path,
+                        st_record,
+                        cost_basis=breakdown.st_basis,
+                        purchase_date=st_purchase,
+                    )
+                if breakdown.lt_shares > 0:
+                    lt_purchase = resolve_purchase_date(breakdown.lt_purchase_dates)
+                    lt_record = TradeRecord(
+                        date=today,
+                        ticker=order.ticker,
+                        direction=Direction.SELL,
+                        shares=breakdown.lt_shares,
+                        price=order.price,
+                        strategy_name=order.context.source,
+                        holding_period=HoldingPeriod.LONG_TERM,
+                        purchase_date=lt_purchase,
+                    )
+                    append_trade(
+                        self._trade_log_path,
+                        lt_record,
+                        cost_basis=breakdown.lt_basis,
+                        purchase_date=lt_purchase,
+                    )
 
         # Emit alerts only when the order set changes
         current_keys = {(order.ticker, order.direction, order.shares) for order in filtered if order.shares > 0}

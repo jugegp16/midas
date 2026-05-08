@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from enum import Enum
@@ -118,6 +119,23 @@ class PositionLot:
 
 @dataclass(frozen=True)
 class TradeRecord:
+    """A single executed trade.
+
+    Attributes:
+        date: Fill date.
+        ticker: Symbol.
+        direction: BUY or SELL.
+        shares: Filled share count.
+        price: Fill price per share.
+        strategy_name: Attribution source for this fill.
+        holding_period: SHORT_TERM or LONG_TERM on a SELL bucket; ``None`` on a BUY.
+        purchase_date: Purchase date of the consumed lots (SELL) or the fill date
+            (BUY). On a SELL bucket row, ``'various'`` is the literal string
+            sentinel for mixed-lot buckets where the consumed lots don't share a
+            single purchase date — matches Schedule D convention. ``None``
+            indicates an unseeded live lot (purchase date never known).
+    """
+
     date: date
     ticker: str
     direction: Direction
@@ -125,6 +143,7 @@ class TradeRecord:
     price: float
     strategy_name: str
     holding_period: HoldingPeriod | None = None
+    purchase_date: datetime.date | str | None = None
 
 
 @dataclass
@@ -177,4 +196,46 @@ class RiskConfig:
         if (self.drawdown_penalty is None) != (self.drawdown_floor is None):
             missing = "drawdown_floor" if self.drawdown_penalty is not None else "drawdown_penalty"
             msg = f"drawdown_penalty and drawdown_floor must both be set or both omitted; missing {missing}"
+            raise ValueError(msg)
+
+
+@dataclass(frozen=True)
+class TaxConfig:
+    """Optional capital-gains-tax accounting policy.
+
+    All rates are decimal fractions (0.37 == 37%). When None is passed in
+    place of a TaxConfig, after-tax accounting is fully disabled — no extra
+    BacktestResult fields, no equity_curve.csv column, no chart overlay.
+
+    deductible_loss_cap: cap on net losses deducted against ordinary income
+        per year (IRC §1211(b) — $3,000 single-filer / MFJ). Excess carries
+        forward to the next year.
+    payment_lag_days: calendar days from year-end to when tax for that year
+        is deducted from the after-tax equity curve. Defaults to 105 ≈ Apr 15
+        of the following year.
+    """
+
+    short_term_rate: float = 0.37
+    long_term_rate: float = 0.20
+    deductible_loss_cap: float = 3000.0
+    payment_lag_days: int = 105
+
+    def __post_init__(self) -> None:
+        if self.short_term_rate < 0 or self.short_term_rate >= 1:
+            msg = f"short_term_rate must be in [0, 1), got {self.short_term_rate}"
+            raise ValueError(msg)
+        if self.long_term_rate < 0 or self.long_term_rate >= 1:
+            msg = f"long_term_rate must be in [0, 1), got {self.long_term_rate}"
+            raise ValueError(msg)
+        if self.deductible_loss_cap < 0:
+            msg = f"deductible_loss_cap must be >= 0, got {self.deductible_loss_cap}"
+            raise ValueError(msg)
+        if self.payment_lag_days < 0:
+            msg = f"payment_lag_days must be >= 0, got {self.payment_lag_days}"
+            raise ValueError(msg)
+        if self.long_term_rate > self.short_term_rate:
+            msg = (
+                f"long_term_rate ({self.long_term_rate}) must be <= short_term_rate "
+                f"({self.short_term_rate}); preferential LT rate is always <= the ST rate"
+            )
             raise ValueError(msg)

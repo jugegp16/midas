@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import date, timedelta
+from unittest.mock import MagicMock
 
 import numpy as np
 import pandas as pd
@@ -10,6 +12,32 @@ import pytest
 
 from midas.data.price_history import PriceHistory
 from midas.models import CashInfusion, Holding, PortfolioConfig
+
+
+@pytest.fixture
+def make_provider() -> Callable[[dict[str, list[float]], list[date]], MagicMock]:
+    """Factory fixture producing a fake DataProvider with controlled OHLCV data."""
+
+    def _make(prices: dict[str, list[float]], dates: list[date]) -> MagicMock:
+        provider = MagicMock()
+
+        def get_history(ticker: str, start: date, end: date) -> pd.DataFrame:
+            closes = prices[ticker]
+            return pd.DataFrame(
+                {
+                    "open": closes,
+                    "high": closes,
+                    "low": closes,
+                    "close": closes,
+                    "volume": [1000.0] * len(closes),
+                },
+                index=pd.DatetimeIndex([pd.Timestamp(d) for d in dates]),
+            )
+
+        provider.get_history.side_effect = get_history
+        return provider
+
+    return _make
 
 
 @pytest.fixture

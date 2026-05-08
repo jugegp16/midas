@@ -221,3 +221,10 @@ Exit rules evaluate at the **aggregate position level** — they see a share-wei
 **Execution is FIFO.** When the backtest engine executes a sell order, it consumes lots first-in-first-out. This is the US broker default for equities (IRS default tax-lot identification method) and the approach used universally across backtesting frameworks. Trades are classified as short-term (held less than 365 days) or long-term based on the FIFO lot's purchase date.
 
 A future extension could add configurable lot-consumption methods (LIFO, highest-cost, specific-ID) at the execution layer, but FIFO is the correct default.
+
+## Tax reporting
+
+Both live and backtest emit a unified `trades.csv` shape. Backtest gains
+opt-in after-tax metrics via a `tax:` block in the strategies YAML; the
+`midas tax-report` subcommand consumes either log to produce a Schedule D
+table + CSV. See [`docs/tax-reporting.md`](tax-reporting.md).

@@ -126,9 +126,18 @@ def _render_equity(result: BacktestResult) -> None:
     dates = [dt.isoformat() for dt, _ in result.equity_curve]
     equity = [value for _, value in result.equity_curve]
     _setup_single_figure()
-    plt.plot(dates, equity, color="cyan", marker="braille")
+    has_after_tax = len(result.after_tax_equity_curve) == len(result.equity_curve) and bool(
+        result.after_tax_equity_curve
+    )
+    if has_after_tax:
+        plt.plot(dates, equity, color="cyan", label="Gross", marker="braille")
+        after_tax = [value for _, value in result.after_tax_equity_curve]
+        plt.plot(dates, after_tax, color="magenta", label="After-Tax", marker="braille")
+    else:
+        plt.plot(dates, equity, color="cyan", marker="braille")
     plt.ylabel("Portfolio $")
-    _flush_centered("Equity Curve")
+    title = "Equity Curve (Gross vs After-Tax)" if has_after_tax else "Equity Curve"
+    _flush_centered(title)
 
 
 def _render_excess_return(result: BacktestResult) -> None:

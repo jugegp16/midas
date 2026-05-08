@@ -98,7 +98,7 @@ def test_load_portfolio_state_file_field_optional(tmp_path: Path) -> None:
 
 
 def test_load_strategies(strategy_yaml: Path) -> None:
-    configs, constraints, _risk = load_strategies(strategy_yaml)
+    configs, constraints, _risk, _tax = load_strategies(strategy_yaml)
     assert len(configs) == 3
 
     assert configs[0].name == "MeanReversion"
@@ -144,7 +144,7 @@ class TestLoadStrategiesRisk:
                 params: {window: 20}
             """,
         )
-        _configs, _constraints, risk = load_strategies(path)
+        _configs, _constraints, risk, _tax = load_strategies(path)
         assert risk == RiskConfig()
 
     def test_full_risk_block(self, tmp_path: Path) -> None:
@@ -162,7 +162,7 @@ class TestLoadStrategiesRisk:
               drawdown_floor: 0.5
             """,
         )
-        _configs, _constraints, risk = load_strategies(path)
+        _configs, _constraints, risk, _tax = load_strategies(path)
         assert risk.weighting == "inverse_vol"
         assert risk.vol_lookback_days == 90
         assert risk.vol_target == 0.20
@@ -180,7 +180,7 @@ class TestLoadStrategiesRisk:
               vol_target: 0.18
             """,
         )
-        _configs, _constraints, risk = load_strategies(path)
+        _configs, _constraints, risk, _tax = load_strategies(path)
         assert risk.vol_target == 0.18
         assert risk.weighting == "equal"
         assert risk.drawdown_penalty is None
@@ -199,3 +199,37 @@ class TestLoadStrategiesRisk:
         )
         with pytest.raises(ValueError, match="drawdown_floor"):
             load_strategies(path)
+
+
+# ---------------------------------------------------------------------------
+# Tax: block parsing
+# ---------------------------------------------------------------------------
+
+
+def test_load_strategies_with_tax_block(tmp_path: Path) -> None:
+    """Optional tax: block parses to a TaxConfig."""
+    path = tmp_path / "strategies.yaml"
+    path.write_text(
+        "strategies:\n"
+        "  - name: Momentum\n"
+        "    params: {window: 20}\n"
+        "tax:\n"
+        "  short_term_rate: 0.32\n"
+        "  long_term_rate: 0.15\n"
+        "  deductible_loss_cap: 3000.0\n"
+        "  payment_lag_days: 105\n"
+    )
+    _configs, _constraints, _risk, tax = load_strategies(path)
+    assert tax is not None
+    assert tax.short_term_rate == 0.32
+    assert tax.long_term_rate == 0.15
+    assert tax.deductible_loss_cap == 3000.0
+    assert tax.payment_lag_days == 105
+
+
+def test_load_strategies_without_tax_block(tmp_path: Path) -> None:
+    """Omitting tax: yields tax_config=None — no behavior change for existing configs."""
+    path = tmp_path / "strategies.yaml"
+    path.write_text("strategies:\n  - name: Momentum\n    params: {window: 20}\n")
+    _configs, _constraints, _risk, tax = load_strategies(path)
+    assert tax is None

@@ -182,6 +182,38 @@ def print_backtest_summary(result: BacktestResult, *, show_charts: bool = False)
             justify="center",
         )
 
+    # --- After-Tax Performance ---
+    if result.after_tax_final_value is not None:
+        after_tax = make_metric_table("After-Tax Performance")
+        after_tax.add_row("After-Tax Final Value", f"${result.after_tax_final_value:,.2f}")
+        after_tax.add_row(
+            "After-Tax Total Return",
+            _return_row(result.after_tax_total_return or 0.0, total_days),
+        )
+        after_tax.add_row("After-Tax CAGR", color_signed(result.after_tax_cagr or 0.0))
+        if result.tax_cost_ratio is not None:
+            after_tax.add_row("Tax Cost Ratio", f"{result.tax_cost_ratio:.2%}")
+        print_centered(after_tax)
+
+        if result.tax_summary:
+            tax_table = make_wide_table("Realized Tax (per year)")
+            tax_table.add_column("Year", style="bold")
+            tax_table.add_column("ST Realized", justify="right")
+            tax_table.add_column("LT Realized", justify="right")
+            tax_table.add_column("Net (after netting)", justify="right")
+            tax_table.add_column("Tax Owed", justify="right")
+            tax_table.add_column("Carry Forward", justify="right")
+            for s in result.tax_summary:
+                tax_table.add_row(
+                    str(s.year),
+                    f"${s.st_realized:+,.2f}",
+                    f"${s.lt_realized:+,.2f}",
+                    f"${s.net_after_cross:+,.2f}",
+                    f"${s.tax_owed:+,.2f}",
+                    f"${s.carry_forward:,.2f}",
+                )
+            print_centered(tax_table)
+
     # --- Train / Test Split ---
     if result.split_date:
         split = make_metric_table("Train / Test Split")

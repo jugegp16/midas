@@ -468,6 +468,7 @@ def test_backtest_results_output(tmp_path: Path) -> None:
         "price",
         "strategy",
         "holding_period",
+        "purchase_date",
         "cost_basis",
         "realized_pnl",
         "return_pct",
@@ -1551,3 +1552,410 @@ def test_sell_mixed_basis_within_single_period() -> None:
     assert trade.holding_period == HoldingPeriod.SHORT_TERM
     assert trade.shares == 10.0
     assert basis == 92.0
+
+
+# --- TradeRecord.purchase_date population in _execute ---
+
+
+def _buy_order(ticker: str, shares: float, price: float, source: str = "Momentum") -> Order:
+    return Order(
+        ticker=ticker,
+        direction=Direction.BUY,
+        shares=shares,
+        price=price,
+        estimated_value=shares * price,
+        context=OrderContext(
+            contributions={source: 1.0},
+            blended_score=1.0,
+            target_weight=0.5,
+            current_weight=0.0,
+            reason="entry",
+            source=source,
+        ),
+    )
+
+
+def test_execute_buy_records_purchase_date_as_day() -> None:
+    """BUY records carry the fill date as their purchase_date."""
+    engine = _build_engine()
+    state = _SimState(cash=10000.0, starting_value=10000.0)
+
+    order = _buy_order("AAPL", 10.0, 20.0)
+    records = engine._execute(order, date(2026, 5, 8), state)
+    trade, _basis = records[0]
+    assert trade.purchase_date == date(2026, 5, 8)
+
+
+def test_execute_sell_single_lot_records_lot_purchase_date() -> None:
+    """SELL bucket consuming one lot records that lot's purchase date."""
+    engine = _build_engine()
+    state = _SimState(cash=0.0, starting_value=0.0)
+    state.lots["AAPL"] = [PositionLot(shares=10.0, purchase_date=date(2026, 1, 1), cost_basis=10.0)]
+    state.positions["AAPL"] = 10.0
+
+    order = _sell_order("AAPL", 10.0, 15.0, source="StopLoss")
+    records = engine._execute(order, date(2026, 5, 8), state)
+    trade, _basis = records[0]
+    assert trade.purchase_date == date(2026, 1, 1)
+
+
+def test_execute_sell_mixed_lot_records_various() -> None:
+    """SELL bucket spanning multiple lots with different dates records 'various'."""
+    engine = _build_engine()
+    state = _SimState(cash=0.0, starting_value=0.0)
+    state.lots["AAPL"] = [
+        PositionLot(shares=5.0, purchase_date=date(2026, 1, 1), cost_basis=10.0),
+        PositionLot(shares=5.0, purchase_date=date(2026, 2, 1), cost_basis=11.0),
+    ]
+    state.positions["AAPL"] = 10.0
+
+    order = _sell_order("AAPL", 10.0, 15.0, source="StopLoss")
+    records = engine._execute(order, date(2026, 5, 8), state)
+    # Only one ST bucket since both lots are <365 days from sell day → both ST → mixed.
+    trade, _basis = records[0]
+    assert trade.purchase_date == "various"
+
+
+def test_execute_sell_single_unseeded_lot_records_none() -> None:
+    """SELL bucket consuming one lot with purchase_date=None records None,
+    not 'various'. Mirrors live-mode unseeded lots from a fresh state file."""
+    engine = _build_engine()
+    state = _SimState(cash=0.0, starting_value=0.0)
+    state.lots["AAPL"] = [PositionLot(shares=10.0, purchase_date=None, cost_basis=10.0)]
+    state.positions["AAPL"] = 10.0
+
+    order = _sell_order("AAPL", 10.0, 15.0, source="StopLoss")
+    records = engine._execute(order, date(2026, 5, 8), state)
+    trade, _basis = records[0]
+    assert trade.purchase_date is None
+
+
+def _make_minimal_result(
+    trades: list[TradeRecord],
+    basis_per_sell: list[float],
+) -> BacktestResult:
+    """Build a minimal ``BacktestResult`` for output-writer tests."""
+    return BacktestResult(
+        trades=trades,
+        final_value=0,
+        starting_value=0,
+        buy_and_hold_value=0,
+        train_trades=[],
+        test_trades=[],
+        train_return=0,
+        test_return=0,
+        train_bh_return=0,
+        test_bh_return=0,
+        split_date=None,
+        twr=0,
+        equity_curve=[],
+        total_days=0,
+        train_days=0,
+        test_days=0,
+        cagr=0,
+        max_drawdown=0,
+        sharpe_ratio=0,
+        sortino_ratio=0,
+        win_rate=0,
+        profit_factor=0,
+        avg_win=0,
+        avg_loss=0,
+        efficiency_ratio=0,
+        strategy_stats=[],
+        unrealized_pnl=0,
+        unrealized_pnl_by_ticker={},
+        basis_per_sell=basis_per_sell,
+    )
+
+
+def test_trades_csv_includes_purchase_date_column(tmp_path: Path) -> None:
+    """Backtest output's trades.csv has a purchase_date column populated for BUYs and SELLs."""
+    import csv
+
+    from midas.results import _write_trades_csv
+
+    trades = [
+        TradeRecord(
+            date=date(2026, 1, 5),
+            ticker="AAPL",
+            direction=Direction.BUY,
+            shares=10.0,
+            price=20.0,
+            strategy_name="Momentum",
+            purchase_date=date(2026, 1, 5),
+        ),
+        TradeRecord(
+            date=date(2026, 4, 1),
+            ticker="AAPL",
+            direction=Direction.SELL,
+            shares=10.0,
+            price=25.0,
+            strategy_name="StopLoss",
+            holding_period=HoldingPeriod.SHORT_TERM,
+            purchase_date=date(2026, 1, 5),
+        ),
+    ]
+    result = _make_minimal_result(trades=trades, basis_per_sell=[20.0])
+    out = tmp_path / "trades.csv"
+    _write_trades_csv(result, out)
+    rows = list(csv.DictReader(out.open()))
+    assert "purchase_date" in rows[0]
+    assert rows[0]["purchase_date"] == "2026-01-05"
+    assert rows[1]["purchase_date"] == "2026-01-05"
+
+
+def test_backtest_trades_csv_round_trips_through_trade_log_reader(tmp_path: Path) -> None:
+    """Backtest's trades.csv shape must match TRADE_LOG_COLUMNS exactly so
+    the live and backtest paths share one reader. read_trades raises
+    TradeLogError on any header drift, so a successful round-trip pins
+    the column shape."""
+    from midas.results import _write_trades_csv
+    from midas.trade_log import read_trades
+
+    trades = [
+        TradeRecord(
+            date=date(2026, 1, 5),
+            ticker="AAPL",
+            direction=Direction.BUY,
+            shares=10.0,
+            price=20.0,
+            strategy_name="Momentum",
+            purchase_date=date(2026, 1, 5),
+        ),
+        TradeRecord(
+            date=date(2026, 4, 1),
+            ticker="AAPL",
+            direction=Direction.SELL,
+            shares=10.0,
+            price=25.0,
+            strategy_name="StopLoss",
+            holding_period=HoldingPeriod.SHORT_TERM,
+            purchase_date=date(2026, 1, 5),
+        ),
+    ]
+    result = _make_minimal_result(trades=trades, basis_per_sell=[20.0])
+    out = tmp_path / "trades.csv"
+    _write_trades_csv(result, out)
+    rows = read_trades(out)  # raises on shape drift
+    assert len(rows) == 2
+    assert rows[0].direction == Direction.BUY
+    assert rows[0].purchase_date == date(2026, 1, 5)
+    assert rows[1].direction == Direction.SELL
+    assert rows[1].holding_period == HoldingPeriod.SHORT_TERM
+    assert rows[1].purchase_date == date(2026, 1, 5)
+    assert rows[1].cost_basis == 20.0
+
+
+def _stop_loss_frame() -> tuple[PortfolioConfig, dict[str, pd.DataFrame]]:
+    """Frame and portfolio that triggers a StopLoss exit (one realized SELL)."""
+    n = 30
+    dates = [d.date() for d in pd.bdate_range(start=date(2024, 1, 2), periods=n)]
+    closes = np.full(n, 100.0)
+    opens = np.full(n, 100.0)
+    highs = np.full(n, 100.0)
+    lows = np.full(n, 100.0)
+    volumes = np.full(n, 1_000_000.0)
+    drop_day = 20
+    opens[drop_day] = 92.0
+    highs[drop_day] = 93.0
+    lows[drop_day] = 88.0
+    closes[drop_day] = 90.0
+    opens[drop_day + 1] = 89.0
+    highs[drop_day + 1] = 91.0
+    lows[drop_day + 1] = 88.0
+    closes[drop_day + 1] = 91.0
+    frame = pd.DataFrame(
+        {"open": opens, "high": highs, "low": lows, "close": closes, "volume": volumes},
+        index=dates,
+    )
+    portfolio = PortfolioConfig(
+        holdings=[Holding(ticker="GAPCO", shares=5, cost_basis=100.0)],
+        available_cash=10_000.0,
+    )
+    return portfolio, {"GAPCO": frame}
+
+
+def test_backtest_result_after_tax_fields_populated_with_tax_config() -> None:
+    """End-to-end: a backtest with TaxConfig set populates after_tax_* fields and tax_summary."""
+    from midas.models import TaxConfig
+
+    portfolio, price_data = _stop_loss_frame()
+    constraints = AllocationConstraints(min_buy_delta=0.01, max_position_pct=0.95)
+    allocator = Allocator(
+        [(GapDownRecovery(gap_threshold=0.03), 1.0)],
+        constraints,
+        n_tickers=1,
+    )
+    tax = TaxConfig(short_term_rate=0.30, long_term_rate=0.15)
+    engine = BacktestEngine(
+        allocator=allocator,
+        order_sizer=OrderSizer(default_slippage=0.0),
+        exit_rules=[StopLoss(loss_threshold=0.05)],
+        constraints=constraints,
+        enable_split=False,
+        execution_mode="next_open",
+        tax_config=tax,
+    )
+    frame = price_data["GAPCO"]
+    start, end = frame.index[0], frame.index[-1]
+    result = engine.run(portfolio, price_data, start, end)
+
+    # The fixture produces at least one realized SELL, so the tax pipeline
+    # has data to operate on.
+    sells = [t for t in result.trades if t.direction == Direction.SELL]
+    assert sells, "fixture must produce at least one SELL for the after-tax pipeline to engage"
+
+    assert result.after_tax_final_value is not None
+    assert result.after_tax_total_return is not None
+    assert result.after_tax_cagr is not None
+    assert result.after_tax_twr is not None
+    assert result.tax_summary, "tax_summary should be non-empty when sells happened"
+    assert len(result.after_tax_equity_curve) == len(result.equity_curve)
+
+    # tax_cost_ratio is only meaningful when gross CAGR is positive; otherwise
+    # the field is None (a losing strategy still has tax drag, but expressing
+    # it as a ratio of negative CAGR is not interpretable).
+    if result.cagr > 0:
+        assert result.tax_cost_ratio is not None
+    else:
+        assert result.tax_cost_ratio is None
+
+    # The StopLoss fixture realizes a loss, so tax_owed is negative (a refund
+    # via the deductible-loss credit) and the after-tax curve sits above the
+    # gross curve. In a winning scenario, tax_owed > 0 and the after-tax curve
+    # would sit below. Either way: the sign of (after_tax - gross) must match
+    # the sign of (-tax_owed), and the after-tax curve must reflect that drag
+    # (or refund).
+    total_tax = sum(s.tax_owed for s in result.tax_summary)
+    if total_tax > 0:
+        assert result.after_tax_final_value < result.final_value
+        assert result.after_tax_cagr is not None and result.after_tax_cagr < result.cagr
+    elif total_tax < 0:
+        assert result.after_tax_final_value > result.final_value
+    else:
+        assert result.after_tax_final_value == result.final_value
+
+    # Structural shape of multi-year summaries: years and payment_dates monotonic.
+    if len(result.tax_summary) > 1:
+        years = [s.year for s in result.tax_summary]
+        payment_dates = [s.payment_date for s in result.tax_summary]
+        assert years == sorted(years)
+        assert payment_dates == sorted(payment_dates)
+
+
+def test_backtest_result_after_tax_fields_none_without_tax_config() -> None:
+    """Backwards-compatible: without TaxConfig, all after-tax fields are None/empty."""
+    portfolio, price_data = _stop_loss_frame()
+    constraints = AllocationConstraints(min_buy_delta=0.01, max_position_pct=0.95)
+    allocator = Allocator(
+        [(GapDownRecovery(gap_threshold=0.03), 1.0)],
+        constraints,
+        n_tickers=1,
+    )
+    engine = BacktestEngine(
+        allocator=allocator,
+        order_sizer=OrderSizer(default_slippage=0.0),
+        exit_rules=[StopLoss(loss_threshold=0.05)],
+        constraints=constraints,
+        enable_split=False,
+        execution_mode="next_open",
+    )
+    frame = price_data["GAPCO"]
+    start, end = frame.index[0], frame.index[-1]
+    result = engine.run(portfolio, price_data, start, end)
+
+    assert result.after_tax_final_value is None
+    assert result.after_tax_total_return is None
+    assert result.after_tax_cagr is None
+    assert result.after_tax_twr is None
+    assert result.after_tax_equity_curve == []
+    assert result.tax_summary == []
+    assert result.tax_cost_ratio is None
+
+
+def test_equity_curve_csv_includes_nav_after_tax_when_set(tmp_path: Path) -> None:
+    """equity_curve.csv gains a parallel ``nav_after_tax`` column when after-tax curve is populated."""
+    from midas.results import _write_equity_curve_csv
+
+    result = _make_minimal_result(trades=[], basis_per_sell=[])
+    result.equity_curve = [(date(2026, 1, 5), 1000.0), (date(2026, 1, 6), 1010.0)]
+    result.after_tax_equity_curve = [(date(2026, 1, 5), 1000.0), (date(2026, 1, 6), 990.0)]
+
+    out = tmp_path / "equity_curve.csv"
+    _write_equity_curve_csv(result, out)
+    rows = list(csv_mod.DictReader(out.open()))
+    assert "nav_after_tax" in rows[0]
+    assert rows[0]["nav_after_tax"] == "1000.0"
+    assert rows[1]["nav_after_tax"] == "990.0"
+
+
+def test_equity_curve_csv_omits_nav_after_tax_when_not_set(tmp_path: Path) -> None:
+    """equity_curve.csv has no nav_after_tax column when after-tax curve is empty."""
+    from midas.results import _write_equity_curve_csv
+
+    result = _make_minimal_result(trades=[], basis_per_sell=[])
+    result.equity_curve = [(date(2026, 1, 5), 1000.0), (date(2026, 1, 6), 1010.0)]
+
+    out = tmp_path / "equity_curve.csv"
+    _write_equity_curve_csv(result, out)
+    rows = list(csv_mod.DictReader(out.open()))
+    assert "nav_after_tax" not in rows[0]
+
+
+def test_summary_json_includes_after_tax_block_when_set(tmp_path: Path) -> None:
+    """summary.json includes after-tax fields and tax_summary array when populated."""
+    from midas.results import _write_summary_json
+    from midas.tax import AnnualTaxSummary
+
+    result = _make_minimal_result(trades=[], basis_per_sell=[])
+    result.starting_value = 1000.0
+    result.final_value = 1100.0
+    result.after_tax_final_value = 1080.0
+    result.after_tax_total_return = 0.08
+    result.after_tax_cagr = 0.075
+    result.after_tax_twr = 0.078
+    result.tax_cost_ratio = 0.05
+    result.tax_summary = [
+        AnnualTaxSummary(
+            year=2026,
+            st_realized=100.0,
+            lt_realized=0.0,
+            net_after_cross=100.0,
+            deductible_loss=0.0,
+            carry_forward=0.0,
+            tax_owed=20.0,
+            payment_date=date(2027, 4, 15),
+        )
+    ]
+
+    out = tmp_path / "summary.json"
+    _write_summary_json(result, out)
+    summary = json.loads(out.read_text())
+    assert summary["after_tax_final_value"] == 1080.0
+    assert summary["after_tax_total_return"] == 0.08
+    assert summary["after_tax_cagr"] == 0.075
+    assert summary["after_tax_twr"] == 0.078
+    assert summary["tax_cost_ratio"] == 0.05
+    assert len(summary["tax_summary"]) == 1
+    assert summary["tax_summary"][0]["year"] == 2026
+    assert summary["tax_summary"][0]["tax_owed"] == 20.0
+    assert summary["tax_summary"][0]["payment_date"] == "2027-04-15"
+
+
+def test_summary_json_omits_after_tax_block_when_not_set(tmp_path: Path) -> None:
+    """summary.json has no after-tax fields when fields are None and tax_summary empty."""
+    from midas.results import _write_summary_json
+
+    result = _make_minimal_result(trades=[], basis_per_sell=[])
+    result.starting_value = 1000.0
+    result.final_value = 1100.0
+
+    out = tmp_path / "summary.json"
+    _write_summary_json(result, out)
+    summary = json.loads(out.read_text())
+    assert "after_tax_final_value" not in summary
+    assert "after_tax_total_return" not in summary
+    assert "after_tax_cagr" not in summary
+    assert "after_tax_twr" not in summary
+    assert "tax_cost_ratio" not in summary
+    assert "tax_summary" not in summary

@@ -19,6 +19,7 @@ from midas.models import (
     PortfolioConfig,
     RiskConfig,
     StrategyConfig,
+    TaxConfig,
     TradingRestrictions,
 )
 
@@ -82,11 +83,13 @@ def load_portfolio(path: Path) -> PortfolioConfig:
 
 def load_strategies(
     path: Path,
-) -> tuple[list[StrategyConfig], AllocationConstraints, RiskConfig]:
-    """Load strategy configs, allocation knobs, and optional risk policy from YAML.
+) -> tuple[list[StrategyConfig], AllocationConstraints, RiskConfig, TaxConfig | None]:
+    """Load strategy configs, allocation knobs, optional risk policy, and optional tax policy.
 
-    Returns (strategies, constraints, risk_config). The risk block is optional;
-    omitting it yields a default ``RiskConfig`` (all features off, current behavior).
+    Returns (strategies, constraints, risk_config, tax_config). Both risk and tax
+    blocks are optional; omitting either yields the documented default (default
+    ``RiskConfig`` for risk, ``None`` for tax — meaning after-tax accounting is
+    disabled).
     """
     raw = _load_yaml(path)
 
@@ -124,4 +127,14 @@ def load_strategies(
         drawdown_floor=(float(risk_raw["drawdown_floor"]) if risk_raw.get("drawdown_floor") is not None else None),
     )
 
-    return configs, constraints, risk
+    tax_raw = raw.get("tax")
+    tax: TaxConfig | None = None
+    if tax_raw is not None:
+        tax = TaxConfig(
+            short_term_rate=float(tax_raw.get("short_term_rate", 0.37)),
+            long_term_rate=float(tax_raw.get("long_term_rate", 0.20)),
+            deductible_loss_cap=float(tax_raw.get("deductible_loss_cap", 3000.0)),
+            payment_lag_days=int(tax_raw.get("payment_lag_days", 105)),
+        )
+
+    return configs, constraints, risk, tax

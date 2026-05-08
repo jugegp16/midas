@@ -18,13 +18,36 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 
 from midas.models import PortfolioConfig, PositionLot
 
 logger = logging.getLogger(__name__)
+
+type PurchaseDate = date | Literal["various"] | None
+
+
+def resolve_purchase_date(dates: tuple[date | None, ...]) -> PurchaseDate:
+    """Map a tuple of consumed lots' purchase dates to a single CSV value.
+
+    - Empty tuple -> ``None``.
+    - All consumed lots share one ``purchase_date`` (a date OR all-``None``)
+      -> that single value.
+    - Multiple distinct values, including the ``date + None`` mix -> the
+      literal string ``'various'``.
+
+    Used by both the live engine and the backtest engine to derive the
+    ``purchase_date`` column on a SELL bucket row in the trade log.
+    """
+    if not dates:
+        return None
+    unique = set(dates)
+    if len(unique) == 1:
+        return next(iter(unique))
+    return "various"
+
 
 SCHEMA_VERSION = 1
 # When bumping SCHEMA_VERSION, add a migration path in ``load_state`` so
@@ -277,6 +300,11 @@ class SellBreakdown:
     ``sum(take * cost_basis)`` accumulator, useful for callers that need bit-
     identical reconstructions of total basis (since ``basis * shares`` is only
     algebraically — not bit-identically — equal in IEEE-754).
+
+    The ``*_purchase_dates`` tuples list the purchase dates of the consumed lot
+    slices in FIFO order; trade-log writers use them to populate the
+    ``purchase_date`` column (single date when all lots in a bucket share one
+    date, otherwise the literal string ``'various'``).
     """
 
     st_shares: float
@@ -285,6 +313,8 @@ class SellBreakdown:
     lt_shares: float
     lt_basis: float
     lt_weighted: float
+    st_purchase_dates: tuple[date | None, ...] = ()
+    lt_purchase_dates: tuple[date | None, ...] = ()
 
 
 def aggregate_cost_basis(lots: Sequence[PositionLot]) -> float:
@@ -300,8 +330,9 @@ def consume_lots_fifo(lots: list[PositionLot], shares: float, day: date) -> Sell
 
     Lots whose ``purchase_date`` is at least 365 days before *day* contribute
     to the long-term bucket; everything else (including ``purchase_date=None``)
-    goes to the short-term bucket. Each bucket reports a share-weighted
-    cost basis over the consumed slices.
+    goes to the short-term bucket. Each bucket reports a share-weighted cost
+    basis over the consumed slices, plus the per-lot purchase dates of the
+    slices in FIFO order.
     """
     if shares <= 0 or not lots:
         return SellBreakdown(
@@ -315,8 +346,10 @@ def consume_lots_fifo(lots: list[PositionLot], shares: float, day: date) -> Sell
 
     st_shares = 0.0
     st_weighted = 0.0
+    st_dates: list[date | None] = []
     lt_shares = 0.0
     lt_weighted = 0.0
+    lt_dates: list[date | None] = []
     remaining = shares
     while remaining > 0 and lots:
         lot = lots[0]
@@ -325,9 +358,11 @@ def consume_lots_fifo(lots: list[PositionLot], shares: float, day: date) -> Sell
         if is_long_term:
             lt_shares += take
             lt_weighted += take * lot.cost_basis
+            lt_dates.append(lot.purchase_date)
         else:
             st_shares += take
             st_weighted += take * lot.cost_basis
+            st_dates.append(lot.purchase_date)
 
         if lot.shares <= remaining:
             remaining -= lot.shares
@@ -349,6 +384,8 @@ def consume_lots_fifo(lots: list[PositionLot], shares: float, day: date) -> Sell
         lt_shares=lt_shares,
         lt_basis=lt_basis,
         lt_weighted=lt_weighted,
+        st_purchase_dates=tuple(st_dates),
+        lt_purchase_dates=tuple(lt_dates),
     )
 
 
@@ -362,13 +399,13 @@ def apply_buy(state: LiveState, ticker: str, shares: float, price: float, day: d
     state.available_cash -= shares * price
 
 
-def apply_sell(state: LiveState, ticker: str, shares: float, price: float, day: date) -> tuple[float, float]:
+def apply_sell(state: LiveState, ticker: str, shares: float, price: float, day: date) -> SellBreakdown:
     """Consume *shares* of *ticker* FIFO and increment cash by ``shares * price``.
 
-    Mutates *state* in place. Returns ``(st_realized_pnl, lt_realized_pnl)``
-    matching backtest's ST/LT classification (lots with purchase_date >=365
-    days before *day* count as long-term; everything else, including
-    ``purchase_date=None``, counts as short-term).
+    Mutates *state* in place. Returns the full ``SellBreakdown`` so callers
+    can write trade-log rows with per-bucket shares, basis, and consumed-lot
+    purchase dates. Realized P&L is recoverable as
+    ``breakdown.st_shares * price - breakdown.st_weighted`` (analogous for LT).
     """
     lots = state.lots.get(ticker, [])
     breakdown = consume_lots_fifo(lots, shares, day)
@@ -385,6 +422,4 @@ def apply_sell(state: LiveState, ticker: str, shares: float, price: float, day: 
         # Mirrors backtest's ``state.high_water_marks.pop(ticker, None)`` on
         # ``new_position == 0``.
         state.high_water_marks.pop(ticker, None)
-    st_pnl = breakdown.st_shares * price - breakdown.st_weighted
-    lt_pnl = breakdown.lt_shares * price - breakdown.lt_weighted
-    return st_pnl, lt_pnl
+    return breakdown

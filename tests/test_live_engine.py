@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import date
 from pathlib import Path
 from unittest.mock import MagicMock
 
-import pandas as pd
 import pytest
 
 from midas.allocator import Allocator
@@ -24,26 +24,7 @@ from midas.models import (
 )
 from midas.order_sizer import OrderSizer
 
-
-def _make_provider(prices: dict[str, list[float]], dates: list[date]) -> MagicMock:
-    """Build a fake DataProvider returning an OHLCV frame for each ticker."""
-    provider = MagicMock()
-
-    def get_history(ticker: str, start: date, end: date) -> pd.DataFrame:
-        closes = prices[ticker]
-        return pd.DataFrame(
-            {
-                "open": closes,
-                "high": closes,
-                "low": closes,
-                "close": closes,
-                "volume": [1000.0] * len(closes),
-            },
-            index=pd.DatetimeIndex([pd.Timestamp(d) for d in dates]),
-        )
-
-    provider.get_history.side_effect = get_history
-    return provider
+ProviderFactory = Callable[[dict[str, list[float]], list[date]], MagicMock]
 
 
 @pytest.fixture
@@ -54,13 +35,15 @@ def basic_portfolio() -> PortfolioConfig:
     )
 
 
-def test_live_engine_seeds_state_on_first_construction(basic_portfolio: PortfolioConfig, tmp_path: Path) -> None:
+def test_live_engine_seeds_state_on_first_construction(
+    basic_portfolio: PortfolioConfig, tmp_path: Path, make_provider: ProviderFactory
+) -> None:
     state_path = tmp_path / "portfolio.state.yaml"
     assert not state_path.exists()
 
     allocator = Allocator(entries=[], constraints=AllocationConstraints(), n_tickers=1)
     sizer = OrderSizer()
-    provider = _make_provider({"AAPL": [150.0]}, [date(2026, 5, 7)])
+    provider = make_provider({"AAPL": [150.0]}, [date(2026, 5, 7)])
 
     LiveEngine(
         portfolio=basic_portfolio,
@@ -76,7 +59,7 @@ def test_live_engine_seeds_state_on_first_construction(basic_portfolio: Portfoli
     assert "AAPL" in state.lots
 
 
-def test_tick_advances_in_memory_hwm(tmp_path: Path) -> None:
+def test_tick_advances_in_memory_hwm(tmp_path: Path, make_provider: ProviderFactory) -> None:
     """First tick should advance per-ticker HWM in self._state to the latest close."""
     portfolio = PortfolioConfig(
         holdings=[Holding(ticker="AAPL", shares=10.0, cost_basis=100.0)],
@@ -85,7 +68,7 @@ def test_tick_advances_in_memory_hwm(tmp_path: Path) -> None:
     state_path = tmp_path / "state.yaml"
     allocator = Allocator(entries=[], constraints=AllocationConstraints(), n_tickers=1)
     sizer = OrderSizer()
-    provider = _make_provider({"AAPL": [200.0]}, [date(2026, 5, 7)])
+    provider = make_provider({"AAPL": [200.0]}, [date(2026, 5, 7)])
 
     engine = LiveEngine(
         portfolio=portfolio,
@@ -99,7 +82,7 @@ def test_tick_advances_in_memory_hwm(tmp_path: Path) -> None:
     assert engine._state.high_water_marks["AAPL"] == 200.0
 
 
-def test_tick_uses_weighted_avg_basis_from_state(tmp_path: Path) -> None:
+def test_tick_uses_weighted_avg_basis_from_state(tmp_path: Path, make_provider: ProviderFactory) -> None:
     """If the operator has two lots at different prices, the exit-rule loop
     should see the share-weighted average basis, not the YAML's static value."""
     portfolio = PortfolioConfig(
@@ -122,7 +105,7 @@ def test_tick_uses_weighted_avg_basis_from_state(tmp_path: Path) -> None:
 
     allocator = Allocator(entries=[], constraints=AllocationConstraints(), n_tickers=1)
     sizer = OrderSizer()
-    provider = _make_provider({"AAPL": [150.0]}, [date(2026, 5, 7)])
+    provider = make_provider({"AAPL": [150.0]}, [date(2026, 5, 7)])
     engine = LiveEngine(
         portfolio=portfolio,
         allocator=allocator,
@@ -138,13 +121,13 @@ def test_tick_uses_weighted_avg_basis_from_state(tmp_path: Path) -> None:
     assert engine._state.high_water_marks["AAPL"] == 150.0
 
 
-def test_peak_equity_advances_and_persists(tmp_path: Path) -> None:
+def test_peak_equity_advances_and_persists(tmp_path: Path, make_provider: ProviderFactory) -> None:
     portfolio = PortfolioConfig(
         holdings=[Holding(ticker="AAPL", shares=10.0, cost_basis=100.0)],
         available_cash=0.0,
     )
     state_path = tmp_path / "state.yaml"
-    provider = _make_provider({"AAPL": [200.0]}, [date(2026, 5, 7)])
+    provider = make_provider({"AAPL": [200.0]}, [date(2026, 5, 7)])
     engine = LiveEngine(
         portfolio=portfolio,
         allocator=Allocator(entries=[], constraints=AllocationConstraints(), n_tickers=1),
@@ -158,14 +141,14 @@ def test_peak_equity_advances_and_persists(tmp_path: Path) -> None:
     assert state.peak_equity == pytest.approx(10 * 200.0)
 
 
-def test_state_is_persisted_to_disk_each_tick(tmp_path: Path) -> None:
+def test_state_is_persisted_to_disk_each_tick(tmp_path: Path, make_provider: ProviderFactory) -> None:
     """Even on a no-op tick (no orders), HWM and peak advance get saved."""
     portfolio = PortfolioConfig(
         holdings=[Holding(ticker="AAPL", shares=10.0, cost_basis=100.0)],
         available_cash=0.0,
     )
     state_path = tmp_path / "state.yaml"
-    provider = _make_provider({"AAPL": [150.0]}, [date(2026, 5, 7)])
+    provider = make_provider({"AAPL": [150.0]}, [date(2026, 5, 7)])
     engine = LiveEngine(
         portfolio=portfolio,
         allocator=Allocator(entries=[], constraints=AllocationConstraints(), n_tickers=1),
@@ -180,7 +163,9 @@ def test_state_is_persisted_to_disk_each_tick(tmp_path: Path) -> None:
     assert on_disk.peak_equity == pytest.approx(10 * 150.0)
 
 
-def test_cash_infusion_advances_when_due(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_cash_infusion_advances_when_due(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, make_provider: ProviderFactory
+) -> None:
     """If today >= cash_infusion.next_date, cash increases by amount and
     next_date advances."""
     portfolio = PortfolioConfig(
@@ -189,7 +174,7 @@ def test_cash_infusion_advances_when_due(tmp_path: Path, monkeypatch: pytest.Mon
         cash_infusion=CashInfusion(amount=1500.0, next_date=date(2026, 5, 1), frequency="biweekly"),
     )
     state_path = tmp_path / "state.yaml"
-    provider = _make_provider({"AAPL": [100.0]}, [date(2026, 5, 7)])
+    provider = make_provider({"AAPL": [100.0]}, [date(2026, 5, 7)])
     engine = LiveEngine(
         portfolio=portfolio,
         allocator=Allocator(entries=[], constraints=AllocationConstraints(), n_tickers=1),
@@ -212,7 +197,9 @@ def test_cash_infusion_advances_when_due(tmp_path: Path, monkeypatch: pytest.Mon
     assert state.cash_infusion_next_date == date(2026, 5, 15)  # +14 days for biweekly
 
 
-def test_alert_cash_display_does_not_double_count(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_alert_cash_display_does_not_double_count(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, make_provider: ProviderFactory
+) -> None:
     """``apply_buy``/``apply_sell`` mutate ``state.available_cash`` in place,
     so the per-alert running subtotal must seed from the *pre-fill* baseline.
     Otherwise a single $100 BUY against $1000 cash would print "$800" instead
@@ -223,7 +210,7 @@ def test_alert_cash_display_does_not_double_count(tmp_path: Path, monkeypatch: p
         available_cash=1000.0,
     )
     state_path = tmp_path / "state.yaml"
-    provider = _make_provider({"AAPL": [100.0]}, [date(2026, 5, 7)])
+    provider = make_provider({"AAPL": [100.0]}, [date(2026, 5, 7)])
     engine = LiveEngine(
         portfolio=portfolio,
         allocator=Allocator(entries=[], constraints=AllocationConstraints(), n_tickers=1),
@@ -268,7 +255,7 @@ def test_alert_cash_display_does_not_double_count(tmp_path: Path, monkeypatch: p
     assert engine._state.available_cash == pytest.approx(900.0)
 
 
-def test_tick_passes_current_drawdown_to_allocator(tmp_path: Path) -> None:
+def test_tick_passes_current_drawdown_to_allocator(tmp_path: Path, make_provider: ProviderFactory) -> None:
     """``_tick`` must compute ``(peak_equity - total_value) / peak_equity`` from
     persisted state and pass it as ``current_drawdown`` to the allocator. Without
     this, the CPPI overlay is inert in live regardless of how far below peak the
@@ -291,7 +278,7 @@ def test_tick_passes_current_drawdown_to_allocator(tmp_path: Path) -> None:
     )
     save_atomic(seeded, state_path)
 
-    provider = _make_provider({"AAPL": [80.0]}, [date(2026, 5, 7)])
+    provider = make_provider({"AAPL": [80.0]}, [date(2026, 5, 7)])
     captured_kwargs: dict[str, object] = {}
     allocator = Allocator(entries=[], constraints=AllocationConstraints(), n_tickers=1)
 
@@ -317,7 +304,9 @@ def test_tick_passes_current_drawdown_to_allocator(tmp_path: Path) -> None:
     assert captured_kwargs["current_drawdown"] == pytest.approx(0.6)
 
 
-def test_peak_equity_survives_engine_restart_and_drives_drawdown(tmp_path: Path) -> None:
+def test_peak_equity_survives_engine_restart_and_drives_drawdown(
+    tmp_path: Path, make_provider: ProviderFactory
+) -> None:
     """Tick A advances peak via the engine's own logic, then a fresh engine
     constructed from the same state path reads peak from disk and the next
     tick's current_drawdown reflects the persisted value.
@@ -334,7 +323,7 @@ def test_peak_equity_survives_engine_restart_and_drives_drawdown(tmp_path: Path)
     state_path = tmp_path / "state.yaml"
 
     # Tick A: price at 200 → equity at $2000, peak ratchets to $2000.
-    provider_a = _make_provider({"AAPL": [200.0]}, [date(2026, 5, 7)])
+    provider_a = make_provider({"AAPL": [200.0]}, [date(2026, 5, 7)])
     engine_a = LiveEngine(
         portfolio=portfolio,
         allocator=Allocator(entries=[], constraints=AllocationConstraints(), n_tickers=1),
@@ -362,7 +351,7 @@ def test_peak_equity_survives_engine_restart_and_drives_drawdown(tmp_path: Path)
 
     allocator_b.allocate = capturing_allocate  # type: ignore[method-assign]
 
-    provider_b = _make_provider({"AAPL": [80.0]}, [date(2026, 5, 8)])
+    provider_b = make_provider({"AAPL": [80.0]}, [date(2026, 5, 8)])
     engine_b = LiveEngine(
         portfolio=portfolio,
         allocator=allocator_b,
@@ -378,7 +367,7 @@ def test_peak_equity_survives_engine_restart_and_drives_drawdown(tmp_path: Path)
     assert captured["current_drawdown"] == pytest.approx(0.6)
 
 
-def test_tick_does_not_advance_hwm_for_unheld_tickers(tmp_path: Path) -> None:
+def test_tick_does_not_advance_hwm_for_unheld_tickers(tmp_path: Path, make_provider: ProviderFactory) -> None:
     """HWM must only ratchet for tickers we actually hold. Otherwise a ticker
     that ran up before the strategy first bought it would seed ``TrailingStop``
     against a pre-purchase peak — silently more conservative than backtest,
@@ -397,7 +386,7 @@ def test_tick_does_not_advance_hwm_for_unheld_tickers(tmp_path: Path) -> None:
     )
     save_atomic(seeded, state_path)
 
-    provider = _make_provider({"AAPL": [200.0]}, [date(2026, 5, 7)])
+    provider = make_provider({"AAPL": [200.0]}, [date(2026, 5, 7)])
     engine = LiveEngine(
         portfolio=portfolio,
         allocator=Allocator(entries=[], constraints=AllocationConstraints(), n_tickers=1),
@@ -412,7 +401,7 @@ def test_tick_does_not_advance_hwm_for_unheld_tickers(tmp_path: Path) -> None:
     )
 
 
-def test_lockfile_prevents_concurrent_engines(tmp_path: Path) -> None:
+def test_lockfile_prevents_concurrent_engines(tmp_path: Path, make_provider: ProviderFactory) -> None:
     """Two ``LiveEngine``s against the same state file would otherwise both
     load, both compute, both write — ``os.replace`` would pick a winner and
     silently drop the loser's fills. The advisory lock turns this into a clear
@@ -423,7 +412,7 @@ def test_lockfile_prevents_concurrent_engines(tmp_path: Path) -> None:
         available_cash=0.0,
     )
     state_path = tmp_path / "state.yaml"
-    provider = _make_provider({"AAPL": [100.0]}, [date(2026, 5, 7)])
+    provider = make_provider({"AAPL": [100.0]}, [date(2026, 5, 7)])
 
     first = LiveEngine(
         portfolio=portfolio,
@@ -455,7 +444,7 @@ def test_lockfile_prevents_concurrent_engines(tmp_path: Path) -> None:
     second.close()
 
 
-def test_lock_released_when_init_fails_after_acquisition(tmp_path: Path) -> None:
+def test_lock_released_when_init_fails_after_acquisition(tmp_path: Path, make_provider: ProviderFactory) -> None:
     """If load_or_seed raises after the lock is acquired (e.g., corrupt state file),
     the lock fd must be released. Otherwise a retry in the same process hits a
     bogus 'another midas live process' RuntimeError.
@@ -468,7 +457,7 @@ def test_lock_released_when_init_fails_after_acquisition(tmp_path: Path) -> None
         holdings=[Holding(ticker="AAPL", shares=10.0, cost_basis=100.0)],
         available_cash=0.0,
     )
-    provider = _make_provider({"AAPL": [100.0]}, [date(2026, 5, 7)])
+    provider = make_provider({"AAPL": [100.0]}, [date(2026, 5, 7)])
 
     # First attempt: load_or_seed raises on the unsupported schema_version.
     with pytest.raises(StateFileError):
@@ -491,6 +480,56 @@ def test_lock_released_when_init_fails_after_acquisition(tmp_path: Path) -> None
         state_path=state_path,
     )
     second.close()
+
+
+def test_engine_creates_trade_log_alongside_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, make_provider: ProviderFactory
+) -> None:
+    """Smoke: a tick that produces a fill writes ``<state>.trades.csv`` with a BUY row."""
+    from midas.trade_log import read_trades
+
+    portfolio = PortfolioConfig(
+        holdings=[],
+        available_cash=1000.0,
+    )
+    state_path = tmp_path / "portfolio.state.yaml"
+    expected_log = state_path.with_suffix(state_path.suffix + ".trades.csv")
+    provider = make_provider({"AAPL": [100.0]}, [date(2026, 5, 7)])
+
+    engine = LiveEngine(
+        portfolio=portfolio,
+        allocator=Allocator(entries=[], constraints=AllocationConstraints(), n_tickers=1),
+        order_sizer=OrderSizer(),
+        provider=provider,
+        state_path=state_path,
+    )
+
+    fake_buy = Order(
+        ticker="AAPL",
+        direction=Direction.BUY,
+        shares=1.0,
+        price=100.0,
+        estimated_value=100.0,
+        context=OrderContext(
+            contributions={"fake": 1.0},
+            blended_score=1.0,
+            target_weight=1.0,
+            current_weight=0.0,
+            reason="test",
+            source="fake",
+        ),
+    )
+    monkeypatch.setattr(engine._order_sizer, "size_buys", lambda *a, **kw: [fake_buy])
+
+    try:
+        engine._tick(["AAPL"])
+    finally:
+        engine.close()
+
+    assert expected_log.exists(), "trade log should be created next to the state file"
+    trades = read_trades(expected_log)
+    buys = [t for t in trades if t.direction == Direction.BUY]
+    assert buys, "first tick should record at least one BUY row"
 
 
 def test_drawdown_overlay_produces_smaller_exposure_under_real_drawdown() -> None:

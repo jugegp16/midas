@@ -170,3 +170,45 @@ def test_render_charts_rolling_sharpe(capsys: pytest.CaptureFixture[str]) -> Non
     render_charts(result)
     out = capsys.readouterr().out
     assert "Rolling Sharpe" in out
+
+
+def _make_result_with_curves(
+    *,
+    equity: list[tuple[date, float]],
+    after_tax: list[tuple[date, float]],
+) -> BacktestResult:
+    """Minimal BacktestResult with the two equity curves populated.
+
+    Everything else gets zero/empty defaults — just enough to drive
+    ``_render_equity`` without exercising any other code path.
+    """
+    result = _empty_result()
+    result.equity_curve = list(equity)
+    result.after_tax_equity_curve = list(after_tax)
+    return result
+
+
+def test_render_equity_includes_after_tax_overlay_when_populated(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When BacktestResult.after_tax_equity_curve is non-empty, the equity chart
+    plots both gross and after-tax series."""
+    import plotext as plt
+
+    from midas.charts import _render_equity
+
+    plot_calls: list[dict] = []
+    real_plot = plt.plot
+
+    def spy(*args: object, **kwargs: object) -> object:
+        plot_calls.append(kwargs)
+        return real_plot(*args, **kwargs)
+
+    monkeypatch.setattr(plt, "plot", spy)
+
+    result = _make_result_with_curves(
+        equity=[(date(2026, 1, 1), 10000.0), (date(2026, 12, 31), 12000.0)],
+        after_tax=[(date(2026, 1, 1), 10000.0), (date(2026, 12, 31), 11500.0)],
+    )
+    _render_equity(result)
+
+    labels = [c.get("label", "") for c in plot_calls]
+    assert any("After-Tax" in lbl for lbl in labels), f"expected After-Tax label, got {labels}"
