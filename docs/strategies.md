@@ -69,7 +69,7 @@ risk:
 
 The optimizer **does not** search risk knobs — risk is policy, easy to overfit, and changing it is a deliberate user act. To experiment, edit the YAML and rerun. For A/B comparisons keep two strategies files in version control.
 
-CPPI (`drawdown_penalty` / `drawdown_floor`) is currently inert in `live` mode — peak persistence requires a state file that is tracked for v2. Live runs log a warning at startup if CPPI is configured.
+CPPI (`drawdown_penalty` / `drawdown_floor`) is supported in `live` mode — peak equity persists across runs through the live state sidecar (see [Architecture: Live State Persistence](architecture.md#live-state-persistence)).
 
 See [Architecture: Risk-aware allocator phases](architecture.md#phase-4a-cppi-drawdown-overlay-optional) for the phase-by-phase behavior.
 
