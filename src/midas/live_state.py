@@ -277,6 +277,11 @@ class SellBreakdown:
     ``sum(take * cost_basis)`` accumulator, useful for callers that need bit-
     identical reconstructions of total basis (since ``basis * shares`` is only
     algebraically — not bit-identically — equal in IEEE-754).
+
+    The ``*_purchase_dates`` tuples list the purchase dates of the consumed lot
+    slices in FIFO order; trade-log writers use them to populate the
+    ``purchase_date`` column (single date when all lots in a bucket share one
+    date, otherwise the literal string ``'various'``).
     """
 
     st_shares: float
@@ -285,6 +290,8 @@ class SellBreakdown:
     lt_shares: float
     lt_basis: float
     lt_weighted: float
+    st_purchase_dates: tuple[date | None, ...] = ()
+    lt_purchase_dates: tuple[date | None, ...] = ()
 
 
 def aggregate_cost_basis(lots: Sequence[PositionLot]) -> float:
@@ -300,8 +307,9 @@ def consume_lots_fifo(lots: list[PositionLot], shares: float, day: date) -> Sell
 
     Lots whose ``purchase_date`` is at least 365 days before *day* contribute
     to the long-term bucket; everything else (including ``purchase_date=None``)
-    goes to the short-term bucket. Each bucket reports a share-weighted
-    cost basis over the consumed slices.
+    goes to the short-term bucket. Each bucket reports a share-weighted cost
+    basis over the consumed slices, plus the per-lot purchase dates of the
+    slices in FIFO order.
     """
     if shares <= 0 or not lots:
         return SellBreakdown(
@@ -315,8 +323,10 @@ def consume_lots_fifo(lots: list[PositionLot], shares: float, day: date) -> Sell
 
     st_shares = 0.0
     st_weighted = 0.0
+    st_dates: list[date | None] = []
     lt_shares = 0.0
     lt_weighted = 0.0
+    lt_dates: list[date | None] = []
     remaining = shares
     while remaining > 0 and lots:
         lot = lots[0]
@@ -325,9 +335,11 @@ def consume_lots_fifo(lots: list[PositionLot], shares: float, day: date) -> Sell
         if is_long_term:
             lt_shares += take
             lt_weighted += take * lot.cost_basis
+            lt_dates.append(lot.purchase_date)
         else:
             st_shares += take
             st_weighted += take * lot.cost_basis
+            st_dates.append(lot.purchase_date)
 
         if lot.shares <= remaining:
             remaining -= lot.shares
@@ -349,6 +361,8 @@ def consume_lots_fifo(lots: list[PositionLot], shares: float, day: date) -> Sell
         lt_shares=lt_shares,
         lt_basis=lt_basis,
         lt_weighted=lt_weighted,
+        st_purchase_dates=tuple(st_dates),
+        lt_purchase_dates=tuple(lt_dates),
     )
 
 

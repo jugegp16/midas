@@ -415,3 +415,32 @@ def test_save_atomic_does_not_emit_yaml_aliases(tmp_path: Path) -> None:
     # Confirm round-trip still works after disabling aliases.
     loaded = load_state(path)
     assert loaded == state
+
+
+def test_consume_lots_fifo_records_purchase_dates_per_bucket() -> None:
+    """SellBreakdown should expose the purchase_date of each consumed lot,
+    grouped by ST/LT bucket, so trade-log writers can resolve to a single
+    date or the literal 'various'."""
+    from midas.live_state import consume_lots_fifo
+
+    lots = [
+        PositionLot(shares=10.0, purchase_date=date(2024, 1, 1), cost_basis=10.0),  # LT
+        PositionLot(shares=10.0, purchase_date=date(2024, 5, 1), cost_basis=12.0),  # LT
+        PositionLot(shares=10.0, purchase_date=date(2026, 1, 1), cost_basis=20.0),  # ST
+    ]
+    # Sell 25 on 2026-05-08 → 20 LT + 5 ST consumed.
+    breakdown = consume_lots_fifo(lots, shares=25.0, day=date(2026, 5, 8))
+    assert breakdown.lt_purchase_dates == (date(2024, 1, 1), date(2024, 5, 1))
+    assert breakdown.st_purchase_dates == (date(2026, 1, 1),)
+
+
+def test_consume_lots_fifo_records_none_purchase_date_in_st_bucket() -> None:
+    """A lot with purchase_date=None classifies as ST and surfaces None in the
+    ST date tuple. The downstream resolver maps tuples containing None to the
+    empty-string CSV value."""
+    from midas.live_state import consume_lots_fifo
+
+    lots = [PositionLot(shares=10.0, purchase_date=None, cost_basis=10.0)]
+    breakdown = consume_lots_fifo(lots, shares=10.0, day=date(2026, 5, 8))
+    assert breakdown.st_purchase_dates == (None,)
+    assert breakdown.lt_purchase_dates == ()
