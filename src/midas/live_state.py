@@ -221,7 +221,9 @@ def _check_for_drift(state: LiveState, portfolio: PortfolioConfig) -> None:
             raise StateFileError(msg)
         holding = portfolio.get_holding(ticker)
         assert holding is not None  # guarded by yaml_tickers membership
-        if holding.shares != held:
+        # Tolerate IEEE-754 round-trip noise from accumulated fractional fills;
+        # only warn on share counts that differ by more than 1e-6.
+        if not math.isclose(holding.shares, held, abs_tol=1e-6):
             logger.warning(
                 "share drift: portfolio.yaml has %s=%s but state has %s; trusting state",
                 ticker,

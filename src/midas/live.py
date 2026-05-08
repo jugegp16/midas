@@ -321,6 +321,8 @@ class LiveEngine:
                 apply_buy(self._state, order.ticker, order.shares, order.price, today)
             else:
                 apply_sell(self._state, order.ticker, order.shares, order.price, today)
+            if self._restriction_tracker is not None:
+                self._restriction_tracker.record_trade(order.ticker, order.direction, today)
 
         # Update peak equity from the current portfolio value (post-fills).
         positions_after = {
