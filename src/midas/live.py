@@ -12,7 +12,7 @@ import pandas as pd
 from midas.allocator import AllocationResult, Allocator
 from midas.data.price_history import PriceHistory
 from midas.data.provider import DataProvider
-from midas.live_state import LiveState, load_or_seed
+from midas.live_state import LiveState, aggregate_cost_basis, load_or_seed
 from midas.models import (
     AllocationConstraints,
     Direction,
@@ -121,15 +121,18 @@ class LiveEngine:
 
         active_tickers = [ticker for ticker in tickers if ticker in price_data]
 
-        # Current positions + weights (weights feed Option A: neutral=hold).
-        positions = {}
+        # Advance per-ticker HWM in state to the latest close (never regress).
         for ticker in active_tickers:
-            held = self._portfolio.get_holding(ticker)
-            positions[ticker] = held.shares if held else 0.0
+            close = current_prices[ticker]
+            self._state.high_water_marks[ticker] = max(self._state.high_water_marks.get(ticker, close), close)
+
+        # Current positions + weights (weights feed Option A: neutral=hold).
+        # Positions are derived from state lots, not the YAML.
+        positions = {ticker: sum(lot.shares for lot in self._state.lots.get(ticker, [])) for ticker in active_tickers}
 
         # Pass None (not {}) when the denominator is zero so the allocator
         # falls back to its equal-weight baseline.
-        total_value = self._portfolio.available_cash + sum(
+        total_value = self._state.available_cash + sum(
             positions[ticker] * current_prices[ticker] for ticker in active_tickers
         )
         current_weights: dict[str, float] | None = None
@@ -155,21 +158,8 @@ class LiveEngine:
                 proposed = clamped_targets.get(ticker, 0.0)
                 if proposed <= 0:
                     continue
-                holding = self._portfolio.get_holding(ticker)
-                if holding is None:
-                    continue
-                if holding.cost_basis is None:
-                    logger.warning(
-                        "%s: no cost_basis in portfolio config — using current "
-                        "price as fallback. Stop-loss and profit-taking exits "
-                        "are effectively disabled for this ticker until a real "
-                        "basis is recorded.",
-                        ticker,
-                    )
-                    cost_basis = current_prices[ticker]
-                else:
-                    cost_basis = holding.cost_basis
-                hwm = max(cost_basis, current_prices[ticker])
+                cost_basis = aggregate_cost_basis(self._state.lots.get(ticker, []))
+                hwm = self._state.high_water_marks.get(ticker, current_prices[ticker])
                 clamped = rule.clamp_target(ticker, proposed, price_history[ticker], cost_basis, hwm)
                 if clamped < proposed:
                     clamped_targets[ticker] = clamped
@@ -194,7 +184,7 @@ class LiveEngine:
                 if not self._restriction_tracker.is_blocked(order.ticker, order.direction, today)
             ]
         sell_proceeds = sum(order.estimated_value for order in exit_orders)
-        post_sell_cash = self._portfolio.available_cash + sell_proceeds
+        post_sell_cash = self._state.available_cash + sell_proceeds
 
         clamped_allocation = AllocationResult(
             targets=clamped_targets,
@@ -226,7 +216,7 @@ class LiveEngine:
         self._last_order_keys = current_keys
 
         now = datetime.now(tz=UTC)
-        remaining_cash = self._portfolio.available_cash
+        remaining_cash = self._state.available_cash
         for order in filtered:
             if order.shares <= 0:
                 continue
