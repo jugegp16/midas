@@ -949,9 +949,9 @@ class BacktestEngine:
 
         breakdown = consume_lots_fifo(lots, order.shares, day)
         st_shares = breakdown.st_shares
-        st_weighted_basis = breakdown.st_basis * breakdown.st_shares
+        st_weighted_basis = breakdown.st_weighted
         lt_shares = breakdown.lt_shares
-        lt_weighted_basis = breakdown.lt_basis * breakdown.lt_shares
+        lt_weighted_basis = breakdown.lt_weighted
 
         new_position = state.positions.get(ticker, 0) - order.shares
         # ``size_sells`` caps at held shares, so reaching _execute with a

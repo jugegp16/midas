@@ -208,15 +208,20 @@ def _check_for_drift(state: LiveState, portfolio: PortfolioConfig) -> None:
 class SellBreakdown:
     """Result of consuming lots FIFO for a sell.
 
-    Each pair (shares, share-weighted basis) is reported separately for the
-    short-term (held <365 days, or unknown purchase date) and long-term
-    (held >=365 days) buckets. Either bucket can be zero.
+    Reports shares and share-weighted cost basis separately for the short-term
+    (held <365 days, or unknown purchase date) and long-term (held >=365 days)
+    buckets. Either bucket may be zero. The ``*_weighted`` fields hold the raw
+    ``sum(take * cost_basis)`` accumulator, useful for callers that need bit-
+    identical reconstructions of total basis (since ``basis * shares`` is only
+    algebraically — not bit-identically — equal in IEEE-754).
     """
 
     st_shares: float
     st_basis: float
+    st_weighted: float
     lt_shares: float
     lt_basis: float
+    lt_weighted: float
 
 
 def aggregate_cost_basis(lots: Sequence[PositionLot]) -> float:
@@ -236,7 +241,14 @@ def consume_lots_fifo(lots: list[PositionLot], shares: float, day: date) -> Sell
     cost basis over the consumed slices.
     """
     if shares <= 0 or not lots:
-        return SellBreakdown(0.0, 0.0, 0.0, 0.0)
+        return SellBreakdown(
+            st_shares=0.0,
+            st_basis=0.0,
+            st_weighted=0.0,
+            lt_shares=0.0,
+            lt_basis=0.0,
+            lt_weighted=0.0,
+        )
 
     st_shares = 0.0
     st_weighted = 0.0
@@ -267,4 +279,11 @@ def consume_lots_fifo(lots: list[PositionLot], shares: float, day: date) -> Sell
 
     st_basis = st_weighted / st_shares if st_shares > 0 else 0.0
     lt_basis = lt_weighted / lt_shares if lt_shares > 0 else 0.0
-    return SellBreakdown(st_shares=st_shares, st_basis=st_basis, lt_shares=lt_shares, lt_basis=lt_basis)
+    return SellBreakdown(
+        st_shares=st_shares,
+        st_basis=st_basis,
+        st_weighted=st_weighted,
+        lt_shares=lt_shares,
+        lt_basis=lt_basis,
+        lt_weighted=lt_weighted,
+    )

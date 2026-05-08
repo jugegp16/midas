@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
@@ -186,7 +186,9 @@ def test_consume_lots_fifo_st_only() -> None:
     breakdown = consume_lots_fifo(lots, shares=40.0, day=today)
     assert breakdown.st_shares == 40.0
     assert breakdown.st_basis == pytest.approx(10.0)
+    assert breakdown.st_weighted == pytest.approx(400.0)
     assert breakdown.lt_shares == 0.0
+    assert breakdown.lt_weighted == 0.0
     assert lots[0].shares == 60.0  # mutated in place
 
 
@@ -211,3 +213,43 @@ def test_consume_lots_fifo_unknown_purchase_date_is_short_term() -> None:
     breakdown = consume_lots_fifo(lots, shares=50.0, day=today)
     assert breakdown.st_shares == 50.0
     assert breakdown.lt_shares == 0.0
+
+
+def test_consume_lots_fifo_oversell_consumes_all_available() -> None:
+    """Selling more than the lot list holds consumes everything available
+    and reports a partial breakdown. (Oversell-prevention is the caller's
+    responsibility — backtest's _execute asserts new_position >= 0; live's
+    apply_sell will be similarly bounded by the order sizer.)"""
+    today = date(2026, 5, 7)
+    lots = [PositionLot(shares=10.0, purchase_date=date(2026, 4, 1), cost_basis=20.0)]
+    breakdown = consume_lots_fifo(lots, shares=999.0, day=today)
+    assert breakdown.st_shares == 10.0  # only 10 available
+    assert lots == []
+
+
+def test_consume_lots_fifo_zero_shares_no_op() -> None:
+    today = date(2026, 5, 7)
+    lots = [PositionLot(shares=10.0, purchase_date=date(2026, 4, 1), cost_basis=20.0)]
+    breakdown = consume_lots_fifo(lots, shares=0.0, day=today)
+    assert breakdown.st_shares == 0.0
+    assert breakdown.lt_shares == 0.0
+    assert lots == [PositionLot(shares=10.0, purchase_date=date(2026, 4, 1), cost_basis=20.0)]
+
+
+def test_consume_lots_fifo_exact_365_day_boundary_is_long_term() -> None:
+    """Pin the exact-boundary classification: a lot purchased exactly 365
+    days ago classifies as long-term (>= 365). This matches the existing
+    backtest behavior; do not silently relax to > 365 in a future refactor."""
+    today = date(2026, 5, 7)
+    one_year_ago = today - timedelta(days=365)
+    lots = [PositionLot(shares=10.0, purchase_date=one_year_ago, cost_basis=20.0)]
+    breakdown = consume_lots_fifo(lots, shares=10.0, day=today)
+    assert breakdown.lt_shares == 10.0
+    assert breakdown.st_shares == 0.0
+
+
+def test_consume_lots_fifo_full_consumption_leaves_empty_list() -> None:
+    today = date(2026, 5, 7)
+    lots = [PositionLot(shares=10.0, purchase_date=date(2026, 4, 1), cost_basis=20.0)]
+    consume_lots_fifo(lots, shares=10.0, day=today)
+    assert lots == []
