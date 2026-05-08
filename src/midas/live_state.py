@@ -287,3 +287,31 @@ def consume_lots_fifo(lots: list[PositionLot], shares: float, day: date) -> Sell
         lt_basis=lt_basis,
         lt_weighted=lt_weighted,
     )
+
+
+def apply_buy(state: LiveState, ticker: str, shares: float, price: float, day: date) -> None:
+    """Append a new lot for *ticker* and decrement cash by ``shares * price``.
+
+    Mutates *state* in place. Use after the live engine has emitted a buy
+    alert and the operator is assumed to have filled at *price*.
+    """
+    state.lots.setdefault(ticker, []).append(PositionLot(shares=shares, purchase_date=day, cost_basis=price))
+    state.available_cash -= shares * price
+
+
+def apply_sell(state: LiveState, ticker: str, shares: float, price: float, day: date) -> tuple[float, float]:
+    """Consume *shares* of *ticker* FIFO and increment cash by ``shares * price``.
+
+    Mutates *state* in place. Returns ``(st_realized_pnl, lt_realized_pnl)``
+    matching backtest's ST/LT classification (lots with purchase_date >=365
+    days before *day* count as long-term; everything else, including
+    ``purchase_date=None``, counts as short-term).
+    """
+    lots = state.lots.get(ticker, [])
+    breakdown = consume_lots_fifo(lots, shares, day)
+    state.available_cash += shares * price
+    if not lots:
+        state.lots.pop(ticker, None)
+    st_pnl = breakdown.st_shares * (price - breakdown.st_basis) if breakdown.st_shares > 0 else 0.0
+    lt_pnl = breakdown.lt_shares * (price - breakdown.lt_basis) if breakdown.lt_shares > 0 else 0.0
+    return st_pnl, lt_pnl

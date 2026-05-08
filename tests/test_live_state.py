@@ -11,6 +11,8 @@ from midas.live_state import (
     LiveState,
     StateFileError,
     aggregate_cost_basis,
+    apply_buy,
+    apply_sell,
     consume_lots_fifo,
     load_or_seed,
     load_state,
@@ -253,3 +255,49 @@ def test_consume_lots_fifo_full_consumption_leaves_empty_list() -> None:
     lots = [PositionLot(shares=10.0, purchase_date=date(2026, 4, 1), cost_basis=20.0)]
     consume_lots_fifo(lots, shares=10.0, day=today)
     assert lots == []
+
+
+def test_apply_buy_appends_lot_and_decrements_cash() -> None:
+    state = LiveState(available_cash=1000.0, cash_infusion_next_date=None)
+    apply_buy(state, "AAPL", shares=10.0, price=150.0, day=date(2026, 5, 7))
+    assert state.available_cash == pytest.approx(1000.0 - 10.0 * 150.0)
+    assert state.lots["AAPL"] == [PositionLot(shares=10.0, purchase_date=date(2026, 5, 7), cost_basis=150.0)]
+
+
+def test_apply_buy_appends_to_existing_lots() -> None:
+    state = LiveState(
+        available_cash=1000.0,
+        cash_infusion_next_date=None,
+        lots={"AAPL": [PositionLot(shares=5.0, purchase_date=date(2026, 4, 1), cost_basis=140.0)]},
+    )
+    apply_buy(state, "AAPL", shares=10.0, price=150.0, day=date(2026, 5, 7))
+    assert len(state.lots["AAPL"]) == 2
+    assert state.available_cash == pytest.approx(1000.0 - 10.0 * 150.0)
+
+
+def test_apply_sell_consumes_fifo_and_increments_cash() -> None:
+    state = LiveState(
+        available_cash=0.0,
+        cash_infusion_next_date=None,
+        lots={
+            "AAPL": [
+                PositionLot(shares=30.0, purchase_date=date(2025, 4, 1), cost_basis=10.0),  # LT
+                PositionLot(shares=20.0, purchase_date=date(2026, 4, 1), cost_basis=20.0),  # ST
+            ]
+        },
+    )
+    st_pnl, lt_pnl = apply_sell(state, "AAPL", shares=40.0, price=25.0, day=date(2026, 5, 7))
+    assert state.available_cash == pytest.approx(40.0 * 25.0)
+    assert state.lots["AAPL"] == [PositionLot(shares=10.0, purchase_date=date(2026, 4, 1), cost_basis=20.0)]
+    assert lt_pnl == pytest.approx(30.0 * (25.0 - 10.0))
+    assert st_pnl == pytest.approx(10.0 * (25.0 - 20.0))
+
+
+def test_apply_sell_drops_empty_ticker_entry() -> None:
+    state = LiveState(
+        available_cash=0.0,
+        cash_infusion_next_date=None,
+        lots={"AAPL": [PositionLot(shares=10.0, purchase_date=None, cost_basis=10.0)]},
+    )
+    apply_sell(state, "AAPL", shares=10.0, price=20.0, day=date(2026, 5, 7))
+    assert "AAPL" not in state.lots  # cleared
